@@ -484,13 +484,17 @@ def main() -> int:
             if dst:
                 edge_dst_repos.add(dst)
 
-    existing_names = {c.get("name", "") for c in components}
+    # Normalise names by stripping the bzlmod '+' suffix before comparing so
+    # that e.g. 'nlohmann_json+' (from external_repos) and 'nlohmann_json'
+    # (from an edge destination) are not treated as distinct components — both
+    # would otherwise produce the same sanitised bom-ref, creating duplicates.
+    existing_names = {c.get("name", "").rstrip("+") for c in components}
     for dst in sorted(edge_dst_repos):
-        if dst not in existing_names:
+        if dst.rstrip("+") not in existing_names:
             component = resolve_component(dst, metadata)
             if component:
                 components.append(component)
-                existing_names.add(component.get("name", ""))
+                existing_names.add(component.get("name", "").rstrip("+"))
 
     components = deduplicate_components(components)
 

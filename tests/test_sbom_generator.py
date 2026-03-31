@@ -1224,6 +1224,31 @@ class TestMain(unittest.TestCase):
         bom_refs = {c["bom-ref"] for c in cdx["components"]}
         self.assertIn("transitive_lib@7e163021", bom_refs)
 
+    def test_edge_only_dst_plus_suffix_not_duplicated(self):
+        """A repo in external_repos as 'foo+' and as a dep-edge dst 'foo' must
+        not produce two components with the same bom-ref.
+
+        bzlmod appends '+' to workspace names, so 'nlohmann_json+' in
+        external_repos and 'nlohmann_json' in a dep edge are the same package.
+        Both resolve to bom-ref 'nlohmann_json@unknown' after name sanitisation;
+        adding both would violate the CycloneDX uniqueness requirement.
+        """
+        input_data = {
+            "external_repos": ["nlohmann_json+"],
+            "exclude_patterns": [],
+            "config": self._DEFAULT_CONFIG,
+            "dep_module_files": [],
+            "module_lockfiles": [],
+            "external_dep_edges": ["some_lib::nlohmann_json"],
+        }
+        self._run(input_data=input_data, metadata={})
+        with open(self._cdx_path) as f:
+            cdx = json.load(f)
+
+        bom_refs = [c["bom-ref"] for c in cdx["components"]]
+        duplicates = {r for r in bom_refs if bom_refs.count(r) > 1}
+        self.assertEqual(duplicates, set(), msg=f"Duplicate bom-refs found: {duplicates}")
+
     def test_edge_only_dst_http_archive_gets_component(self):
         """A dep-edge destination not in external_repos but registered as an
         http_archive must appear as a component in the output.
