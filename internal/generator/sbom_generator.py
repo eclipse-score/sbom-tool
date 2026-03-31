@@ -469,6 +469,31 @@ def main() -> int:
     # Deduplicate components by name
     components = deduplicate_components(components)
 
+    # Ensure components exist for all dependency edge destinations.
+    # The Bazel aspect only records repos encountered as direct target
+    # dependencies in external_repos.  Transitive repos that appear only as
+    # destinations in dep edges (e.g. a transitive library depended on by a
+    # a runtime deb package depended upon by a -dev deb package) are therefore
+    # missing from external_repos and never get a component entry, causing
+    # dangling dependsOn refs in the output.  Resolve and add any missing ones.
+    edge_dst_repos: set[str] = set()
+    for edge in data.get("external_dep_edges", []):
+        if "::" in edge:
+            _, dst = edge.split("::", 1)
+            dst = dst.rstrip("+")
+            if dst:
+                edge_dst_repos.add(dst)
+
+    existing_names = {c.get("name", "") for c in components}
+    for dst in sorted(edge_dst_repos):
+        if dst not in existing_names:
+            component = resolve_component(dst, metadata)
+            if component:
+                components.append(component)
+                existing_names.add(component.get("name", ""))
+
+    components = deduplicate_components(components)
+
     # Enrich components with C++ metadata cache
     if cpp_components:
         components = enrich_components_from_cpp_cache(

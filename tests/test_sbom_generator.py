@@ -1182,3 +1182,132 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.exists(self._cdx_path))
         self.assertFalse(os.path.exists(self._spdx_path))
+
+    # -----------------------------------------------------------------------
+    # Dangling dependency ref fixes
+    # -----------------------------------------------------------------------
+
+    def test_edge_only_dst_git_repo_gets_component(self):
+        """A dep-edge destination not in external_repos but registered as a
+        git_repository must appear as a component in the output.
+
+        wrapper_lib is in external_repos and depends on transitive_lib which
+        only appears as a dep-edge destination and is registered via
+        sbom_ext.git_repository.
+        """
+        input_data = {
+            "external_repos": ["wrapper_lib"],
+            "exclude_patterns": [],
+            "config": self._DEFAULT_CONFIG,
+            "dep_module_files": [],
+            "module_lockfiles": [],
+            "external_dep_edges": ["wrapper_lib::transitive_lib"],
+        }
+        metadata = {
+            "git_repositories": {
+                "wrapper_lib": {
+                    "version": "ca20f473",
+                    "purl": "pkg:github/example-org/wrapper_lib@ca20f473",
+                    "remote": "https://github.com/example-org/wrapper_lib.git",
+                },
+                "transitive_lib": {
+                    "version": "7e163021",
+                    "purl": "pkg:github/example-org/transitive_lib@7e163021",
+                    "remote": "https://github.com/example-org/transitive_lib.git",
+                },
+            }
+        }
+        self._run(input_data=input_data, metadata=metadata)
+        with open(self._cdx_path) as f:
+            cdx = json.load(f)
+
+        bom_refs = {c["bom-ref"] for c in cdx["components"]}
+        self.assertIn("transitive_lib@7e163021", bom_refs)
+
+    def test_edge_only_dst_http_archive_gets_component(self):
+        """A dep-edge destination not in external_repos but registered as an
+        http_archive must appear as a component in the output.
+
+        Mirrors the real-world case where libcap2-dev-deb depends on
+        libcap2-deb (runtime), which is only registered via sbom_ext.http_archive
+        and never appears as a direct Bazel target.
+        """
+        input_data = {
+            "external_repos": ["score_baselibs_repo_rules+libcap2-dev-deb"],
+            "exclude_patterns": [],
+            "config": self._DEFAULT_CONFIG,
+            "dep_module_files": [],
+            "module_lockfiles": [],
+            "external_dep_edges": [
+                "score_baselibs_repo_rules+libcap2-dev-deb"
+                "::score_baselibs_repo_rules+libcap2-deb"
+            ],
+        }
+        metadata = {
+            "http_archives": {
+                "score_baselibs_repo_rules+libcap2-dev-deb": {
+                    "version": "2.25-1.2",
+                    "purl": "pkg:generic/libcap2-dev@2.25-1.2",
+                    "url": "https://example.com/libcap-dev.deb",
+                    "license": "BSD-3-Clause AND GPL-2.0-only",
+                },
+                "score_baselibs_repo_rules+libcap2-deb": {
+                    "version": "2.25-1.2",
+                    "purl": "pkg:generic/libcap2@2.25-1.2",
+                    "url": "https://example.com/libcap2.deb",
+                    "license": "BSD-3-Clause AND GPL-2.0-only",
+                },
+            }
+        }
+        self._run(input_data=input_data, metadata=metadata)
+        with open(self._cdx_path) as f:
+            cdx = json.load(f)
+
+        bom_refs = {c["bom-ref"] for c in cdx["components"]}
+        # bom-ref sanitises '+' away — assert on the sanitised form
+        self.assertIn(
+            "score_baselibs_repo_ruleslibcap2-deb@2.25-1.2", bom_refs
+        )
+
+    def test_no_dangling_dependency_refs_in_cyclonedx(self):
+        """Every bom-ref that appears in a dependsOn list must have a
+        corresponding entry in the components array (or be the root component).
+
+        This is the CycloneDX validity check that catches dangling-ref bugs
+        caused by transitive deps that are not in external_repos.
+        """
+        input_data = {
+            "external_repos": ["wrapper_lib"],
+            "exclude_patterns": [],
+            "config": self._DEFAULT_CONFIG,
+            "dep_module_files": [],
+            "module_lockfiles": [],
+            "external_dep_edges": ["wrapper_lib::transitive_lib"],
+        }
+        metadata = {
+            "git_repositories": {
+                "wrapper_lib": {
+                    "version": "ca20f473",
+                    "purl": "pkg:github/example-org/wrapper_lib@ca20f473",
+                    "remote": "https://github.com/example-org/wrapper_lib.git",
+                },
+                "transitive_lib": {
+                    "version": "7e163021",
+                    "purl": "pkg:github/example-org/transitive_lib@7e163021",
+                    "remote": "https://github.com/example-org/transitive_lib.git",
+                },
+            }
+        }
+        self._run(input_data=input_data, metadata=metadata)
+        with open(self._cdx_path) as f:
+            cdx = json.load(f)
+
+        root_ref = cdx["metadata"]["component"]["bom-ref"]
+        known_refs = {root_ref} | {c["bom-ref"] for c in cdx["components"]}
+        for dep_entry in cdx["dependencies"]:
+            for ref in dep_entry.get("dependsOn", []):
+                self.assertIn(
+                    ref,
+                    known_refs,
+                    msg=f"Dangling dependsOn ref: {ref!r} has no matching component",
+                )
