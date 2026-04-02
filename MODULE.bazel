@@ -18,6 +18,7 @@ module(
 )
 
 bazel_dep(name = "rules_python", version = "1.4.1")
+bazel_dep(name = "rules_nodejs", version = "6.7.3")
 
 PYTHON_VERSION = "3.12"
 
@@ -26,6 +27,18 @@ python.toolchain(
     is_default = True,
     python_version = PYTHON_VERSION,
 )
+
+uv = use_extension(
+    "@rules_python//python/uv:uv.bzl",
+    "uv",
+    dev_dependency = True,
+)
+uv.configure()
+use_repo(uv, "uv")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "20.19.0")
+use_repo(node, "nodejs", "nodejs_toolchains")
 
 # score_tooling provides score_py_pytest test infrastructure (dev only)
 bazel_dep(name = "score_tooling", dev_dependency = True)
