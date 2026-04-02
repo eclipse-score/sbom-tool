@@ -26,6 +26,12 @@ py_library(
 )
 
 py_binary(
+    name = "generate_crates_metadata_cache_bin",
+    srcs = ["generate_crates_metadata_cache.py"],
+    main = "generate_crates_metadata_cache.py",
+)
+
+py_binary(
     name = "generate_python_metadata_cache",
     srcs = ["generate_python_metadata_cache.py"],
     main = "generate_python_metadata_cache.py",

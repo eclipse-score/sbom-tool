@@ -14,10 +14,11 @@
 # Repository quality gates.
 #
 # Most eclipse-score repositories put these in the root BUILD, but score_sbom
-# cannot: sbom_rule implicitly depends on //:npm_wrapper, so consumers load the
-# root package, and a load() from the dev-only @score_tooling there fails for
-# them. Keeping the targets in this package leaves the root package loadable by
-# any consumer. The CI workflows pass the target names explicitly.
+# cannot: sbom_rule implicitly depends on the Bazel-managed Node toolchain, so
+# consumers load the root package, and a load() from the dev-only
+# @score_tooling there fails for them. Keeping the targets in this package
+# leaves the root package loadable by any consumer. The CI workflows pass the
+# target names explicitly.
 
 load("@score_tooling//:defs.bzl", "copyright_checker", "use_format_targets")
 
@@ -47,7 +48,6 @@ copyright_checker(
         "//:defs.bzl",
         "//:extensions.bzl",
         "//:internal",
-        "//:npm_wrapper.sh",
         "//:scripts",
         "//:tests",
         "//tools:BUILD.bazel",

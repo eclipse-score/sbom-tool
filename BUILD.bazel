@@ -29,7 +29,6 @@ exports_files([
     "crates_metadata.json",
     "BUILD.bazel",
     "MODULE.bazel",
-    "npm_wrapper.sh",
 ])
 
 # Source directories handed to //tools:copyright-check as directory artifacts.
@@ -50,8 +49,3 @@ filegroup(
     ],
 )
 
-# npm wrapper (uses system-installed npm from PATH)
-sh_binary(
-    name = "npm_wrapper",
-    srcs = ["npm_wrapper.sh"],
-)
