@@ -134,11 +134,18 @@ def _sbom_impl(ctx):
     # Add cdxgen SBOM if provided; otherwise auto-generate if enabled
     cdxgen_sbom = ctx.file.cdxgen_sbom
     if not cdxgen_sbom and ctx.attr.auto_cdxgen:
+        # Use the Bazel-managed Node.js toolchain for hermetic execution.
+        # node is the hermetic binary; npm_sources contains the npm JS entry point
+        # and all its supporting files declared by the toolchain.
+        node_info = ctx.toolchains["@rules_nodejs//nodejs:toolchain_type"].nodeinfo
         cdxgen_sbom = ctx.actions.declare_file(ctx.attr.name + "_cdxgen.cdx.json")
         ctx.actions.run(
             outputs = [cdxgen_sbom],
-            executable = ctx.executable._npm,
+            tools = [node_info.node],
+            inputs = node_info.npm_sources,
+            executable = node_info.node,
             arguments = [
+                node_info.npm.path,
                 "exec",
                 "--yes",
                 "--package=@cyclonedx/cdxgen@{}".format(ctx.attr.cdxgen_version),
@@ -271,11 +278,6 @@ sbom_rule = rule(
             default = "12.1.4",
             doc = "Pinned @cyclonedx/cdxgen npm version used when auto_cdxgen is enabled",
         ),
-        "_npm": attr.label(
-            default = "@nodejs//:npm",
-            executable = True,
-            cfg = "exec",
-        ),
         "auto_crates_cache": attr.bool(
             default = True,
             doc = "Automatically build crates metadata cache when cargo_lockfile or module_lockfile is provided",
@@ -291,5 +293,6 @@ sbom_rule = rule(
             cfg = "exec",
         ),
     },
+    toolchains = ["@rules_nodejs//nodejs:toolchain_type"],
     doc = "Generates SBOM for specified targets in SPDX and CycloneDX formats",
 )
