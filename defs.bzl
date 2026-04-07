@@ -25,6 +25,7 @@ def sbom(
         dep_module_files = None,
         cdxgen_sbom = None,
         auto_cdxgen = False,
+        cdxgen_version = "12.1.4",
         cargo_lockfile = None,
         module_lockfiles = None,
         auto_crates_cache = True,
@@ -64,6 +65,7 @@ def sbom(
         dep_module_files: MODULE.bazel files from dependency modules for automatic version extraction
         cdxgen_sbom: Optional label to CycloneDX JSON from cdxgen for C++ enrichment
         auto_cdxgen: Run cdxgen automatically when no cdxgen_sbom is provided
+        cdxgen_version: Pinned @cyclonedx/cdxgen npm version for auto_cdxgen
         cargo_lockfile: Optional Cargo.lock for crates metadata cache generation
         module_lockfiles: MODULE.bazel.lock files for crate metadata extraction (e.g., from score_crates and workspace)
         auto_crates_cache: Run crates metadata cache generation when cargo_lockfile or module_lockfiles is provided
@@ -119,6 +121,7 @@ def sbom(
         dep_module_files = dep_module_files if dep_module_files else [],
         cdxgen_sbom = cdxgen_sbom,
         auto_cdxgen = auto_cdxgen,
+        cdxgen_version = cdxgen_version,
         cargo_lockfile = cargo_lockfile,
         module_lockfiles = module_lockfiles if module_lockfiles else [],
         auto_crates_cache = auto_crates_cache,

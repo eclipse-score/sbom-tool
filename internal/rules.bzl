@@ -112,38 +112,45 @@ def _sbom_impl(ctx):
     crates_cache = None
     if (ctx.file.cargo_lockfile or ctx.files.module_lockfiles) and ctx.attr.auto_crates_cache:
         crates_cache = ctx.actions.declare_file(ctx.attr.name + "_crates_metadata.json")
-        cache_inputs = [ctx.file._crates_cache_script]
-        cache_cmd = "set -euo pipefail\npython3 {} {}".format(
-            ctx.file._crates_cache_script.path,
-            crates_cache.path,
-        )
+        cache_inputs = []
+        cache_args = ctx.actions.args()
+        cache_args.add(crates_cache)
         if ctx.file.cargo_lockfile:
             cache_inputs.append(ctx.file.cargo_lockfile)
-            cache_cmd += " --cargo-lock {}".format(ctx.file.cargo_lockfile.path)
+            cache_args.add("--cargo-lock", ctx.file.cargo_lockfile)
         for lock in ctx.files.module_lockfiles:
             cache_inputs.append(lock)
-            cache_cmd += " --module-lock {}".format(lock.path)
-        ctx.actions.run_shell(
+            cache_args.add("--module-lock", lock)
+        ctx.actions.run(
             inputs = cache_inputs,
             outputs = [crates_cache],
-            command = cache_cmd,
+            executable = ctx.executable._crates_cache_script,
+            arguments = [cache_args],
             mnemonic = "CratesCacheGenerate",
             progress_message = "Generating crates metadata cache for %s" % ctx.attr.name,
             execution_requirements = {"requires-network": ""},
-            use_default_shell_env = True,
         )
 
     # Add cdxgen SBOM if provided; otherwise auto-generate if enabled
     cdxgen_sbom = ctx.file.cdxgen_sbom
     if not cdxgen_sbom and ctx.attr.auto_cdxgen:
+        # Use the Bazel-managed Node.js toolchain for hermetic execution.
+        # node is the hermetic binary; npm_sources contains the npm JS entry point
+        # and all its supporting files declared by the toolchain.
+        node_info = ctx.toolchains["@rules_nodejs//nodejs:toolchain_type"].nodeinfo
         cdxgen_sbom = ctx.actions.declare_file(ctx.attr.name + "_cdxgen.cdx.json")
         ctx.actions.run(
             outputs = [cdxgen_sbom],
-            executable = ctx.executable._npm,
+            tools = [node_info.node],
+            inputs = node_info.npm_sources,
+            executable = node_info.node,
             arguments = [
+                node_info.npm.path,
                 "exec",
+                "--yes",
+                "--package=@cyclonedx/cdxgen@{}".format(ctx.attr.cdxgen_version),
                 "--",
-                "@cyclonedx/cdxgen",
+                "cdxgen",
                 "-t",
                 "cpp",
                 "--deep",
@@ -156,7 +163,11 @@ def _sbom_impl(ctx):
             progress_message = "Generating cdxgen SBOM for %s" % ctx.attr.name,
             # cdxgen needs to recursively scan source trees. Running sandboxed with
             # only declared file inputs makes the scan effectively empty.
-            execution_requirements = {"no-sandbox": "1"},
+            # npm exec also resolves/downloads the pinned cdxgen package.
+            execution_requirements = {
+                "no-sandbox": "1",
+                "requires-network": "",
+            },
         )
 
     if cdxgen_sbom:
@@ -263,18 +274,18 @@ sbom_rule = rule(
             default = False,
             doc = "Automatically run cdxgen when no cdxgen_sbom is provided",
         ),
-        "_npm": attr.label(
-            default = "//:npm_wrapper",
-            executable = True,
-            cfg = "exec",
+        "cdxgen_version": attr.string(
+            default = "12.1.4",
+            doc = "Pinned @cyclonedx/cdxgen npm version used when auto_cdxgen is enabled",
         ),
         "auto_crates_cache": attr.bool(
             default = True,
             doc = "Automatically build crates metadata cache when cargo_lockfile or module_lockfile is provided",
         ),
         "_crates_cache_script": attr.label(
-            default = "//scripts:generate_crates_metadata_cache.py",
-            allow_single_file = True,
+            default = "//scripts:generate_crates_metadata_cache_bin",
+            executable = True,
+            cfg = "exec",
         ),
         "_generator": attr.label(
             default = "//internal/generator:sbom_generator",
@@ -282,5 +293,6 @@ sbom_rule = rule(
             cfg = "exec",
         ),
     },
+    toolchains = ["@rules_nodejs//nodejs:toolchain_type"],
     doc = "Generates SBOM for specified targets in SPDX and CycloneDX formats",
 )

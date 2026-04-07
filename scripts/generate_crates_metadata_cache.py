@@ -2,9 +2,9 @@
 """Generate crates metadata cache for SBOM generation.
 
 This script parses Cargo.lock files and/or MODULE.bazel.lock files for
-crate version/checksum data, then fetches license metadata via
-dash-license-scan (Eclipse Foundation + ClearlyDefined) and creates a
-cache file for SBOM generation.
+crate version/checksum data, fetches metadata from crates.io, and creates
+a cache file for SBOM generation. Optional dash-license-scan integration
+can be enabled via CLI for environments that require it.
 
 Usage:
     python3 generate_crates_metadata_cache.py <output.json> --module-lock <MODULE.bazel.lock>
@@ -297,6 +297,14 @@ def _extract_supplier(repository_url: str) -> str:
     return m.group(1) if m else ""
 
 
+def _normalize_license_expression(license_expr: str) -> str:
+    """Normalize common crates.io license separators to SPDX-style operators."""
+    if not license_expr:
+        return ""
+    # crates.io commonly uses "/" as OR.
+    return " OR ".join(part.strip() for part in license_expr.split("/") if part.strip())
+
+
 def _fetch_one_crate_meta(name: str) -> tuple[str, dict[str, str]]:
     """Fetch metadata for a single crate from crates.io API.
 
@@ -322,8 +330,15 @@ def _fetch_one_crate_meta(name: str) -> tuple[str, dict[str, str]]:
             crate = data.get("crate", {})
             desc = (crate.get("description") or "").strip()
             supplier = _extract_supplier(crate.get("repository", ""))
-            if desc or supplier:
-                return name, {"description": desc, "supplier": supplier}
+            license_expr = _normalize_license_expression(
+                (crate.get("license") or "").strip()
+            )
+            if desc or supplier or license_expr:
+                return name, {
+                    "description": desc,
+                    "supplier": supplier,
+                    "license": license_expr,
+                }
         except Exception:
             continue
     return name, {}
@@ -366,14 +381,14 @@ def fetch_crate_metadata_from_cratesio(
 def generate_cache(
     cargo_lock_path: str | None = None,
     module_lock_paths: list[str] | None = None,
+    use_dash_license_scan: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Generate metadata cache from lockfiles + dash-license-scan.
+    """Generate metadata cache from lockfiles and registry metadata.
 
     1. Parse Cargo.lock and/or MODULE.bazel.lock files for crate names, versions, checksums
-    2. Generate a synthetic Cargo.lock combining all crates
-    3. Run dash-license-scan for license data
-    4. Fetch descriptions from crates.io (parallel)
-    5. Combine version/checksum from lockfile with license and description
+    2. Optionally run dash-license-scan for license data
+    3. Fetch descriptions, suppliers, and license fallback from crates.io (parallel)
+    4. Combine version/checksum from lockfile with metadata
 
     Args:
         cargo_lock_path: Optional path to Cargo.lock file
@@ -404,23 +419,25 @@ def generate_cache(
         print("No crates found in lockfiles.")
         return {}
 
-    # Generate synthetic Cargo.lock containing only crates.io crates.
-    # This avoids dash-license-scan's ValueError on non-crates.io sources
-    # (git dependencies, path dependencies) that may be in a real Cargo.lock.
-    temp_dir = tempfile.mkdtemp(prefix="sbom_dash_")
-    synthetic_path = os.path.join(temp_dir, "Cargo.lock")
-    generate_synthetic_cargo_lock(crates, synthetic_path)
-    print(f"Generated synthetic Cargo.lock with {len(crates)} crates")
+    license_map: dict[str, str] = {}
+    if use_dash_license_scan:
+        # Generate synthetic Cargo.lock containing only crates.io crates.
+        # This avoids dash-license-scan's ValueError on non-crates.io sources
+        # (git dependencies, path dependencies) that may be in a real Cargo.lock.
+        temp_dir = tempfile.mkdtemp(prefix="sbom_dash_")
+        synthetic_path = os.path.join(temp_dir, "Cargo.lock")
+        generate_synthetic_cargo_lock(crates, synthetic_path)
+        print(f"Generated synthetic Cargo.lock with {len(crates)} crates")
 
-    summary_path = os.path.join(temp_dir, "dash_summary.txt")
+        summary_path = os.path.join(temp_dir, "dash_summary.txt")
 
-    try:
-        print("Fetching license data via dash-license-scan...")
-        run_dash_license_scan(synthetic_path, summary_path)
-        license_map = parse_dash_summary(summary_path)
-        print(f"Retrieved licenses for {len(license_map)} crates")
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            print("Fetching license data via dash-license-scan...")
+            run_dash_license_scan(synthetic_path, summary_path)
+            license_map = parse_dash_summary(summary_path)
+            print(f"Retrieved licenses for {len(license_map)} crates")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     # Fetch descriptions + suppliers from crates.io (parallel, ~10 concurrent requests)
     cratesio_meta = fetch_crate_metadata_from_cratesio(list(crates.keys()))
@@ -433,7 +450,7 @@ def generate_cache(
             "version": info["version"],
             "checksum": info["checksum"],
             "purl": f"pkg:cargo/{name}@{info['version']}",
-            "license": license_map.get(name, ""),
+            "license": license_map.get(name, meta.get("license", "")),
             "description": meta.get("description", ""),
             "supplier": meta.get("supplier", ""),
         }
@@ -443,7 +460,7 @@ def generate_cache(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate crates metadata cache for SBOM generation (via dash-license-scan)"
+        description="Generate crates metadata cache for SBOM generation"
     )
     parser.add_argument(
         "output",
@@ -461,6 +478,11 @@ def main():
     parser.add_argument(
         "--merge", help="Merge with existing cache file instead of overwriting"
     )
+    parser.add_argument(
+        "--use-dash-license-scan",
+        action="store_true",
+        help="Use dash-license-scan for Rust licenses (requires uvx and Java)",
+    )
 
     args = parser.parse_args()
 
@@ -471,6 +493,7 @@ def main():
     cache = generate_cache(
         cargo_lock_path=args.cargo_lock,
         module_lock_paths=args.module_lock,
+        use_dash_license_scan=args.use_dash_license_scan,
     )
 
     # Merge with existing cache if requested

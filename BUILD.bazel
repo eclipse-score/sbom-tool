@@ -28,8 +28,3 @@ filegroup(
     ],
 )
 
-# npm wrapper (uses system-installed npm from PATH)
-sh_binary(
-    name = "npm_wrapper",
-    srcs = ["npm_wrapper.sh"],
-)

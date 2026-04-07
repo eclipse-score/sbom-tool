@@ -51,10 +51,11 @@ sbom(
 | `component_name` | rule `name` | Name of the root component written into the SBOM; defaults to the rule name if omitted. |
 | `component_version` | `None` | Version string for the root component; auto-detected from the module graph when omitted. |
 | `module_lockfiles` | `[]` | One or more `MODULE.bazel.lock` files used to extract dependency versions and SHA-256 checksums; C++ projects need only the workspace lockfile (`:MODULE.bazel.lock`), Rust projects should also pass `@score_crates//:MODULE.bazel.lock` to cover crate versions and checksums. |
-| `auto_crates_cache` | `True` | Runs `generate_crates_metadata_cache` at build time (requires network) to fetch Rust crate license and supplier data from dash-license-scan and crates.io; set to `False` only as a workaround for air-gapped or offline build environments — doing so produces a non-compliant SBOM where all Rust crates show `NOASSERTION` for license, supplier, and description. Has no effect when no lockfiles are provided (pure C++ projects). |
+| `auto_crates_cache` | `True` | Runs `generate_crates_metadata_cache` at build time (requires network) to fetch Rust crate license, supplier, and description from crates.io API; set to `False` only as a workaround for air-gapped or offline build environments — doing so produces a non-compliant SBOM where all Rust crates show `NOASSERTION` for license, supplier, and description. Has no effect when no lockfiles are provided (pure C++ projects). |
 | `cargo_lockfile` | `None` | Path to a `Cargo.lock` file for crate enumeration; not needed when `module_lockfiles` is provided, as a synthetic `Cargo.lock` is generated from it automatically. **Deprecated — will be removed in a future release.** |
-| `cdxgen_sbom` | `None` | Label to a pre-generated cdxgen CycloneDX JSON file; alternative to `auto_cdxgen` for C++ projects where cdxgen cannot run inside the Bazel build (e.g. CI environment without npm). Run cdxgen manually and pass its output here. Ignored for pure Rust projects. |
-| `auto_cdxgen` | `False` | Runs cdxgen automatically inside the Bazel build (requires npm + `@cyclonedx/cdxgen` installed on the build machine); alternative to `cdxgen_sbom` for C++ projects. Uses `no-sandbox` execution to scan the source tree. Ignored for pure Rust projects. |
+| `cdxgen_sbom` | `None` | Label to a pre-generated cdxgen CycloneDX JSON file; alternative to `auto_cdxgen` for C++ projects where automatic scanning is disabled or restricted in CI. Ignored for pure Rust projects. |
+| `auto_cdxgen` | `False` | Runs cdxgen automatically inside the Bazel build using Bazel-managed Node/npm (no host `npm` or `nvm` installation required). Uses `no-sandbox` execution to scan the source tree. Ignored for pure Rust projects. |
+| `cdxgen_version` | `"12.1.4"` | Pinned npm version for `@cyclonedx/cdxgen` used by `auto_cdxgen`; override to upgrade/downgrade deterministically. |
 | `output_formats` | `["spdx", "cyclonedx"]` | List of output formats to generate; valid values are `"spdx"` and `"cyclonedx"`. |
 | `producer_name` | `"Eclipse Foundation"` | Organisation name recorded as the SBOM producer. |
 | `producer_url` | Eclipse S-CORE URL | URL of the SBOM producer organisation. |
@@ -66,23 +67,20 @@ sbom(
 | `dep_module_files` | `None` | `MODULE.bazel` files from dependency modules used for additional automatic version extraction. |
 | `metadata_json` | `@sbom_metadata//:metadata.json` | Label to the metadata JSON produced by the `sbom_metadata` Bazel extension; rarely needs changing. |
 
-## 3. Install Prerequisites
+## 3. Prerequisites
 
-**Rust crate metadata** (`auto_crates_cache = True`):
+No host-level installation of `nvm`, `npm`, `node`, or `openjdk` is required when using this SBOM rule as intended.
 
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-sudo apt install openjdk-11-jre-headless  # or equivalent for your distro
-```
+- `auto_cdxgen = True`: cdxgen is executed via Bazel-managed tooling.
+- `auto_crates_cache = True`: crate metadata cache generation is executed via Bazel-managed tooling.
 
-**C++ dependency scanning** (`auto_cdxgen = True`):
+If your environment blocks required network access, set `auto_cdxgen = False` and provide `cdxgen_sbom` explicitly.
 
-```bash
-nvm install 20
-npm install -g @cyclonedx/cdxgen
-```
+### Open Point: Full Hermeticity
 
-Set `auto_cdxgen = False` if cdxgen is not available.
+`auto_cdxgen` is closer to hermetic now because it uses Bazel-managed Node/npm instead of host tooling.
+It is not fully hermetic yet: `npm exec --package @cyclonedx/cdxgen@<version>` may still require network access during the build action.
+Until offline package pinning/caching is introduced, air-gapped or fully reproducible pipelines should keep `auto_cdxgen = False` and pass a pre-generated `cdxgen_sbom`.
 
 ## 4. Build
 
@@ -115,9 +113,8 @@ Generated in `bazel-bin/`:
                  │               │               │
                  v               v               v
           metadata.json    _deps.json      License + metadata
-        (module versions)  (dep graph,     (dash-license-scan
-                          dep edges)      + crates.io API
-                 │               │           + cdxgen)
+         (module versions)  (dep graph,     (crates.io API
+                     dep edges)      + cdxgen)
                  └───────────────┼───────────────┘
                                  │
                                  v
@@ -134,13 +131,12 @@ Generated in `bazel-bin/`:
 **Data sources:**
 - **Bazel module graph** — version, PURL, and registry info for `bazel_dep` modules
 - **Bazel aspect** — transitive dependency graph and external repo dependency edges
-- **dash-license-scan** — licenses data
-- **crates.io API** — description and supplier for Rust crates
+- **crates.io API** — licenses, descriptions, and suppliers for Rust crates
 - **cdxgen** — C++ dependency licenses, descriptions, and suppliers
 
 ### Automated Metadata Sources
 
-All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, `http_archive` rules, dash-license-scan (Rust), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
+All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, `http_archive` rules, crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
 
 CPE, aliases, and pedigree are the only fields that may be set manually via `sbom_ext.license()`, as they represent identity and provenance annotations that cannot be auto-deduced.
 
@@ -177,7 +173,7 @@ SHA-256 checksums come exclusively from `MODULE.bazel.lock` `registryFileHashes`
 
 ### License Data by Language
 
-- **Rust**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined); descriptions and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup.
+- **Rust**: Licenses, descriptions, and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup. Optional `dash-license-scan` integration is still available in the cache generator for environments that require it.
 - **C++**: Licenses, descriptions, and suppliers via cdxgen source tree scan. There is no dash-license-scan integration for C++ — it does not support `pkg:generic/...` PURLs used by BCR modules. If cdxgen cannot resolve a component, its description is set to `"Missing"` and its license field is empty.
 
 ### Output Format Versions
