@@ -335,7 +335,9 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             "MIT OR Apache-2.0",
         )
 
-    @mock.patch("scripts.generate_crates_metadata_cache.fetch_crate_metadata_from_cratesio")
+    @mock.patch(
+        "scripts.generate_crates_metadata_cache.fetch_crate_metadata_from_cratesio"
+    )
     def test_generate_cache_uses_cratesio_license_when_dash_disabled(self, mock_fetch):
         """Without dash-license-scan, crates.io license is used as fallback source."""
         mock_fetch.return_value = {
@@ -347,7 +349,9 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         }
         module_lock = self._write_module_lock([("serde", "1.0.228", "abc123")])
 
-        cache = generate_cache(module_lock_paths=[module_lock], use_dash_license_scan=False)
+        cache = generate_cache(
+            module_lock_paths=[module_lock], use_dash_license_scan=False
+        )
 
         self.assertEqual(cache["serde"]["license"], "MIT OR Apache-2.0")
         self.assertEqual(cache["serde"]["description"], "Serde framework")
@@ -355,7 +359,9 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
 
     @mock.patch("scripts.generate_crates_metadata_cache.parse_dash_summary")
     @mock.patch("scripts.generate_crates_metadata_cache.run_dash_license_scan")
-    @mock.patch("scripts.generate_crates_metadata_cache.fetch_crate_metadata_from_cratesio")
+    @mock.patch(
+        "scripts.generate_crates_metadata_cache.fetch_crate_metadata_from_cratesio"
+    )
     def test_dash_license_takes_precedence_over_cratesio(
         self,
         mock_fetch,
@@ -373,7 +379,9 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         mock_parse_dash.return_value = {"serde": "Apache-2.0"}
         module_lock = self._write_module_lock([("serde", "1.0.228", "abc123")])
 
-        cache = generate_cache(module_lock_paths=[module_lock], use_dash_license_scan=True)
+        cache = generate_cache(
+            module_lock_paths=[module_lock], use_dash_license_scan=True
+        )
 
         self.assertEqual(cache["serde"]["license"], "Apache-2.0")
 

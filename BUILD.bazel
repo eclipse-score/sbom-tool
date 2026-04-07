@@ -48,4 +48,3 @@ filegroup(
         "//internal:bzl_files",
     ],
 )
-
