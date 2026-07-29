@@ -6,6 +6,7 @@ information collected by the Bazel aspect and module extension.
 CycloneDX 1.6 Specification: https://cyclonedx.org/docs/1.6/json/
 """
 
+import re
 import uuid
 from typing import Any
 
@@ -33,6 +34,9 @@ def generate_cyclonedx(
     producer_name = config.get("producer_name", "Eclipse Foundation")
     producer_url = config.get("producer_url", "")
 
+    _gh_match = re.match(r"https:\/\/github\.com\/([^\/]+)", producer_url)
+    github_org = _gh_match.group(1) if _gh_match else "eclipse-score"
+
     # Generate serial number (URN UUID)
     serial_number = f"urn:uuid:{uuid.uuid4()}"
 
@@ -59,7 +63,7 @@ def generate_cyclonedx(
                 "name": component_name,
                 "version": component_version if component_version else "unversioned",
                 "bom-ref": _generate_bom_ref(component_name, component_version),
-                "purl": f"pkg:github/eclipse-score/{component_name}@{component_version}"
+                "purl": f"pkg:github/{github_org}/{component_name}@{component_version}"
                 if component_version
                 else None,
                 "supplier": {
