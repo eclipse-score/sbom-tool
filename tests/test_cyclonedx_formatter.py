@@ -206,6 +206,32 @@ class TestCycloneDXFormatter(unittest.TestCase):
         bom_refs = [c["bom-ref"] for c in cdx["components"]]
         self.assertEqual(len(bom_refs), len(set(bom_refs)))
 
+    def test_github_producer_url_sets_github_org_in_purl(self):
+        """GitHub producer_url extracts the org for metadata.component.purl."""
+        config = {
+            "component_name": "my-app",
+            "component_version": "2.3.0",
+            "producer_name": "Acme Corp",
+            "producer_url": "https://github.com/acme",
+            "namespace": "https://github.com/acme",
+        }
+        cdx = generate_cyclonedx([], config, self.timestamp)
+        purl = cdx["metadata"]["component"]["purl"]
+        self.assertEqual(purl, "pkg:github/acme/my-app@2.3.0")
+
+    def test_non_github_producer_url_falls_back_to_default_org_in_purl(self):
+        """Non-GitHub producer_url falls back to 'eclipse-score' as the org in purl."""
+        config = {
+            "component_name": "my-app",
+            "component_version": "2.3.0",
+            "producer_name": "Eclipse Foundation",
+            "producer_url": "https://eclipse.dev/score",
+            "namespace": "https://eclipse.dev/score",
+        }
+        cdx = generate_cyclonedx([], config, self.timestamp)
+        purl = cdx["metadata"]["component"]["purl"]
+        self.assertEqual(purl, "pkg:github/eclipse-score/my-app@2.3.0")
+
 
 class TestNormalizeSpdxLicenseCdx(unittest.TestCase):
     """Verify lowercase operator normalization for CycloneDX formatter."""
