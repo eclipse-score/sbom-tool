@@ -57,7 +57,7 @@ sbom(
 | `auto_cdxgen` | `False` | Runs cdxgen automatically inside the Bazel build (requires npm + `@cyclonedx/cdxgen` installed on the build machine); alternative to `cdxgen_sbom` for C++ projects. Uses `no-sandbox` execution to scan the source tree. Ignored for pure Rust projects. |
 | `output_formats` | `["spdx", "cyclonedx"]` | List of output formats to generate; valid values are `"spdx"` and `"cyclonedx"`. |
 | `producer_name` | `"Eclipse Foundation"` | Organisation name recorded as the SBOM producer. |
-| `producer_url` | Eclipse S-CORE URL | URL of the SBOM producer organisation. |
+| `producer_url` | Eclipse S-CORE URL | URL of the SBOM producer organisation. When this is a `https://github.com/<owner>` URL, the `<owner>` segment is also used as the GitHub namespace in the root component's `pkg:github/…` PURL. For non-GitHub URLs the PURL namespace falls back to `eclipse-score`. |
 | `sbom_authors` | `None` | List of author strings written into SBOM metadata; defaults to `producer_name` when omitted. |
 | `namespace` | `https://eclipse.dev/score` | URI used as the SPDX document namespace and CycloneDX serial number base. |
 | `generation_context` | `None` | CycloneDX lifecycle phase label (e.g. `"build"`, `"release"`). |

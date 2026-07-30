@@ -197,7 +197,7 @@ sbom_rule = rule(
         ),
         "producer_url": attr.string(
             default = "https://projects.eclipse.org/projects/automotive.score",
-            doc = "SBOM producer URL",
+            doc = "URL of the SBOM producer organisation. When this is a https://github.com/<owner> URL, the <owner> segment is also used as the GitHub namespace in the root component's pkg:github/… PURL (CycloneDX only). For non-GitHub URLs the PURL namespace falls back to 'eclipse-score'.",
         ),
         "component_name": attr.string(
             doc = "Component name (defaults to rule name)",

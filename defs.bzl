@@ -69,7 +69,11 @@ def sbom(
         auto_crates_cache: Run crates metadata cache generation when cargo_lockfile or module_lockfiles is provided
         output_formats: List of formats to generate ("spdx", "cyclonedx")
         producer_name: SBOM producer organization name
-        producer_url: SBOM producer URL
+        producer_url: URL of the SBOM producer organisation. When this is a
+            ``https://github.com/<owner>`` URL, the ``<owner>`` segment is
+            also used as the GitHub namespace in the root component's
+            ``pkg:github/…`` PURL (CycloneDX only). For non-GitHub URLs the
+            PURL namespace falls back to ``eclipse-score``.
         component_name: Main component name (defaults to rule name)
         component_version: Component version string
         namespace: SBOM namespace URI (defaults to https://eclipse.dev/score)
