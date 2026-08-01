@@ -1247,7 +1247,9 @@ class TestMain(unittest.TestCase):
 
         bom_refs = [c["bom-ref"] for c in cdx["components"]]
         duplicates = {r for r in bom_refs if bom_refs.count(r) > 1}
-        self.assertEqual(duplicates, set(), msg=f"Duplicate bom-refs found: {duplicates}")
+        self.assertEqual(
+            duplicates, set(), msg=f"Duplicate bom-refs found: {duplicates}"
+        )
 
     def test_edge_only_dst_http_archive_gets_component(self):
         """A dep-edge destination not in external_repos but registered as an
@@ -1290,9 +1292,7 @@ class TestMain(unittest.TestCase):
 
         bom_refs = {c["bom-ref"] for c in cdx["components"]}
         # bom-ref sanitises '+' away — assert on the sanitised form
-        self.assertIn(
-            "score_baselibs_repo_ruleslibcap2-deb@2.25-1.2", bom_refs
-        )
+        self.assertIn("score_baselibs_repo_ruleslibcap2-deb@2.25-1.2", bom_refs)
 
     def test_no_dangling_dependency_refs_in_cyclonedx(self):
         """Every bom-ref that appears in a dependsOn list must have a

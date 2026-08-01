@@ -10,5 +10,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
-
-"""SBOM generator package."""
+name: Copyright checks
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+jobs:
+  # The target is passed explicitly because these live in //tools rather than in
+  # the root package - see tools/BUILD.bazel for why.
+  copyright-check:
+    uses: eclipse-score/cicd-workflows/.github/workflows/copyright.yml@93aac16ada7d247bbb6ae926509ddea74cf5213a # v0.0.2
+    with:
+      bazel-target: run //tools:copyright-check

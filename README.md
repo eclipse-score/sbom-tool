@@ -68,6 +68,9 @@ sbom(
 
 ## 3. Install Prerequisites
 
+These are needed on the build machine of a project that *uses* these rules. To
+work on this repository itself, see [Development](#development) instead.
+
 **Rust crate metadata** (`auto_crates_cache = True`):
 
 ```bash
@@ -152,7 +155,7 @@ Every component entry in the generated SBOM must include the following fields, a
 |---|---|---|---|---|
 | Component name | `name` | `components[].name` | Extracted | Human-readable name of the dependency (e.g. `serde`, `boost.mp11`). |
 | Component version | `versionInfo` | `components[].version` | Extracted | Exact released version string used in the build. |
-| Component hash (SHA-256) | `checksums[SHA256]` | `components[].hashes` | Extracted | SHA-256 digest of the downloaded archive, sourced from `MODULE.bazel.lock` or the `http_archive` `sha256` field. |
+| Component hash (SHA-256) | `checksums[SHA256]` | `components[].hashes` | Extracted | SHA-256 digest of the downloaded archive, taken exclusively from `registryFileHashes` in `MODULE.bazel.lock` (BCR modules) or the `sha256` field of `http_archive` rules; omitted when neither provides one, rather than emitting an incorrect value. |
 | Software identifier (PURL) | `externalRefs[purl]` | `components[].purl` | Extracted | Package URL uniquely identifying the component by ecosystem, name, and version (e.g. `pkg:cargo/serde@1.0.228`). |
 | License expression | `licenseConcluded` | `components[].licenses` | Extracted | SPDX license expression concluded for this component (e.g. `Apache-2.0 OR MIT`). |
 | Dependency relationships | `relationships[DEPENDS_ON]` | `dependencies` | Extracted | Graph edges recording which component depends on which, enabling consumers to reason about transitive exposure. |
@@ -171,10 +174,6 @@ Fields are populated automatically from the sources described in [Automated Meta
 
 Only transitive dependencies of the declared build targets are included. Build-time tools (compilers, build systems, test frameworks) are excluded via `exclude_patterns`.
 
-### Component Hash Source
-
-SHA-256 checksums come exclusively from `MODULE.bazel.lock` `registryFileHashes` (BCR modules) or the `sha256` field of `http_archive` rules. If neither provides a checksum, the hash field is omitted rather than emitting an incorrect value.
-
 ### License Data by Language
 
 - **Rust**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined); descriptions and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup.
@@ -182,7 +181,7 @@ SHA-256 checksums come exclusively from `MODULE.bazel.lock` `registryFileHashes`
 
 ### Output Format Versions
 
-- **SPDX 2.3**: Migration to SPDX 3.0 is deferred until supported in production by at least one major consumer (Trivy, GitHub Dependabot, or Grype). As of early 2026, none support it and the reference Python library marks its own 3.0 support as experimental. `LicenseRef-*` identifiers are declared in `hasExtractedLicensingInfos` as required by SPDX 2.3; supplier is emitted as `Organization: <name>`.
+- **SPDX 2.3**: Migration to SPDX 3.0 is deferred until it is supported in production by at least one major consumer (Trivy, GitHub Dependabot, or Grype) and the reference Python library no longer marks its own 3.0 support as experimental. Neither condition was met when this was last reviewed. `LicenseRef-*` identifiers are declared in `hasExtractedLicensingInfos` as required by SPDX 2.3; supplier is emitted as `Organization: <name>`.
 - **CycloneDX 1.6**: Emitted with `"specVersion": "1.6"` and `"$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json"`.
 
 
@@ -197,7 +196,7 @@ bazel test //tests/...
 Sbom was also tested by external tool
 https://sbomgenerator.com/tools/validator
 
-#### Tests description
+### Tests description
 
 | Test file | Bazel target | What it covers |
 |---|---|---|
@@ -209,5 +208,61 @@ https://sbomgenerator.com/tools/validator
 | `test_generate_crates_metadata_cache.py` | `test_generate_crates_metadata_cache` | `parse_dash_summary()`; `parse_module_bazel_lock()`; `generate_synthetic_cargo_lock()`; end-to-end summary CSV round-trip |
 | `test_generate_cpp_metadata_cache.py` | `test_generate_cpp_metadata_cache` | `convert_cdxgen_to_cache()`: version, license (id/name/expression/AND), supplier (name/publisher fallback), PURL, URL from externalReferences, description |
 | `test_spdx_to_github_snapshot.py` | `test_spdx_to_github_snapshot` | `convert_spdx_to_snapshot()`: top-level fields; direct vs. indirect classification; package filtering; manifest naming; `pkg:generic/` PURL support |
+| `test_real_sbom_integration.py` | `test_real_sbom_integration` | End-to-end generation from captured `reference_integration` fixtures (baselibs, kyron, orchestrator): SPDX and CycloneDX validity; package counts; crate license enrichment and checksums; module version enrichment from the lockfile; `LicenseRef-*` declarations; bom-ref uniqueness; every SPDXID resolving to a real node |
+
+## Development
+
+Prerequisites for *using* these rules in your own project are covered in
+[3. Install Prerequisites](#3-install-prerequisites). This section is about
+working on this repository itself.
+
+### Prerequisites
+
+The Bazel version is pinned in `.bazelversion`, so contributors need
+[bazelisk](https://github.com/bazelbuild/bazelisk) rather than a distribution
+package. A distro `bazel` reads the pin but only looks for that version under
+`/usr/bin`, and fails with `requires Bazel <version> ... but it wasn't found`:
+
+```bash
+curl -Lo ~/.local/bin/bazel \
+  https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+chmod +x ~/.local/bin/bazel
+```
+
+`MODULE.bazel.lock` is tracked in git: it pins the exact resolved dependency
+graph, which matters here because `.bazelrc` resolves against the mutable `main`
+branch of the score registry. After changing `MODULE.bazel`, regenerate it:
+
+```bash
+bazel mod tidy
+bazel mod deps
+git add MODULE.bazel MODULE.bazel.lock
+```
+
+CI fails if the lockfile is stale, so commit it in the same change.
+
+### Continuous integration
+
+Every pull request runs:
+
+| Workflow | Job | What it does |
+|---|---|---|
+| `tests.yml` | `unit_tests` | `bazel test //tests/...` |
+| `format.yml` | `formatting-check` | `//tools:format.check` (`ruff format`, buildifier, yamlfmt) via `eclipse-score/cicd-workflows` |
+| `copyright.yml` | `copyright-check` | `//tools:copyright-check` via `eclipse-score/cicd-workflows` |
+| `bzlmod-lock.yml` | `bzlmod-lock` | `bazel mod tidy` + `bazel mod deps --lockfile_mode=error` via `eclipse-score/cicd-workflows` |
+
+The formatting job checks layout only — it is not a linter. Unused imports,
+undefined names and similar are not gated.
+
+Fix formatting and license headers locally with:
+
+```bash
+bazel run //tools:format.fix
+bazel run //tools:copyright-fix
+```
+
+The license header text comes from the shared `score_tooling` template, so it is
+identical to every other eclipse-score repository.
 
 ---

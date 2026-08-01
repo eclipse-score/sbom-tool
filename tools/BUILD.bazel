@@ -1,0 +1,61 @@
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
+
+# Repository quality gates.
+#
+# Most eclipse-score repositories put these in the root BUILD, but score_sbom
+# cannot: sbom_rule implicitly depends on //:npm_wrapper, so consumers load the
+# root package, and a load() from the dev-only @score_tooling there fails for
+# them. Keeping the targets in this package leaves the root package loadable by
+# any consumer. The CI workflows pass the target names explicitly.
+
+load("@score_tooling//:defs.bzl", "copyright_checker", "use_format_targets")
+
+package(default_visibility = ["//visibility:public"])
+
+# Formatting: //tools:format.check (CI) and //tools:format.fix (local).
+# Layout only - `ruff format`, not `ruff check`. There is deliberately no lint
+# gate; this is here to establish CI, not to police the code.
+# C++ and Rust are omitted because the repository holds no code in those
+# languages; enabling them would pull in the LLVM toolchain for clang-format and
+# a Rust toolchain for rustfmt for nothing.
+use_format_targets(languages = [
+    "python",
+    "starlark",
+    "yaml",
+])
+
+# License headers: //tools:copyright-check (CI) and //tools:copyright-fix (local).
+# The header text itself comes from the shared score_tooling template, so it is
+# identical to every other eclipse-score repository.
+copyright_checker(
+    name = "copyright",
+    srcs = [
+        "//:.github",
+        "//:BUILD.bazel",
+        "//:MODULE.bazel",
+        "//:defs.bzl",
+        "//:extensions.bzl",
+        "//:internal",
+        "//:npm_wrapper.sh",
+        "//:scripts",
+        "//:tests",
+        "//tools:BUILD.bazel",
+    ],
+    config = "@score_tooling//cr_checker/resources:config",
+    # No extensions/exclusion, matching eclipse-score/module_template: cr_checker
+    # already skips any file whose extension has no entry in templates.ini, so
+    # JSON fixtures and lockfiles are ignored without listing anything here.
+    template = "@score_tooling//cr_checker/resources:templates",
+    visibility = ["//visibility:public"],
+)

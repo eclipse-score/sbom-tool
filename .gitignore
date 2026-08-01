@@ -1,4 +1,3 @@
 bazel-*
-MODULE.bazel.lock
-
 __pycache__
+.ruff_cache
