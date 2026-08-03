@@ -1,0 +1,38 @@
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
+
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "greeter",
+    srcs = ["greeter.cpp"],
+    hdrs = ["greeter.h"],
+    strip_include_prefix = "/",
+    deps = ["@nlohmann_json//:json"],
+)
+
+cc_binary(
+    name = "app",
+    srcs = ["main.cpp"],
+    deps = [":greeter"],
+)
+
+cc_test(
+    name = "greeter_test",
+    srcs = ["greeter_test.cpp"],
+    deps = [":greeter"],
+)

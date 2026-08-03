@@ -52,6 +52,10 @@ copyright_checker(
         "//:tests",
         "//tools:BUILD.bazel",
     ],
+    # examples/dummy_project is absent on purpose: .bazelignore hides it from
+    # this workspace, so no label can reach its files, and a directory artifact
+    # for examples/ would follow the bazel-* convenience symlinks a local build
+    # leaves there. Its headers are checked by review only.
     config = "@score_tooling//cr_checker/resources:config",
     # No extensions/exclusion, matching eclipse-score/module_template: cr_checker
     # already skips any file whose extension has no entry in templates.ini, so

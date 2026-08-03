@@ -44,3 +44,27 @@ jobs:
           cache-save: ${{ github.ref == 'refs/heads/main' }}
       - name: Run unit tests
         run: bazel test --test_output=errors //tests/...
+  integration_test:
+    name: Integration test
+    runs-on: ubuntu-24.04
+    # A cold run builds a Rust toolchain and crate_universe from source before
+    # it gets to the SBOM itself, which alone takes a few minutes.
+    timeout-minutes: 30
+    defaults:
+      run:
+        # examples/dummy_project is its own Bazel module - see its MODULE.bazel.
+        working-directory: examples/dummy_project
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: integration_test
+          repository-cache: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+      # Builds the C++ and Rust binaries, generates their SBOM through the
+      # public sbom() macro and asserts the result in //:sbom_test.
+      - name: Build the dummy project and check its SBOM
+        run: bazel test --test_output=errors //...

@@ -1,0 +1,67 @@
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
+
+# Nested workspace holding the dummy project that the SBOM smoke test builds
+# against. It is deliberately a separate Bazel module so that its dependencies
+# (nlohmann_json, rules_rust, score_crates) never leak into the dependency graph
+# of consumers of @score_sbom. It is listed in the repository root .bazelignore.
+
+module(
+    name = "score_sbom_dummy_project",
+    version = "0.1.0",
+)
+
+# --- The tool under test ------------------------------------------------------
+
+bazel_dep(name = "score_sbom", version = "0.0.1")
+local_path_override(
+    module_name = "score_sbom",
+    path = "../..",
+)
+
+# --- C++ dummy code -----------------------------------------------------------
+
+bazel_dep(name = "rules_cc", version = "0.2.9")
+bazel_dep(name = "nlohmann_json", version = "3.12.0")
+
+# --- SBOM validation test -----------------------------------------------------
+
+bazel_dep(name = "rules_python", version = "1.5.1")
+
+# --- Rust dummy code ----------------------------------------------------------
+#
+# rules_rust is taken from the eclipse-score registry, and every crate comes from
+# @score_crates. This workspace deliberately does not declare a crate_universe of
+# its own, so no crate is ever pulled straight from crates.io.
+
+bazel_dep(name = "rules_rust", version = "0.68.2-score")
+bazel_dep(name = "score_crates", version = "0.0.9")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.86.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+# --- SBOM metadata ------------------------------------------------------------
+#
+# score_sbom is pulled in via local_path_override, so its version cannot be read
+# from the module graph; track_module makes the extension read it from the
+# module's own MODULE.bazel instead.
+
+sbom_ext = use_extension("@score_sbom//:extensions.bzl", "sbom_metadata")
+sbom_ext.track_module(name = "score_sbom")
+use_repo(sbom_ext, "sbom_metadata")

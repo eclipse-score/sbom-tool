@@ -187,14 +187,39 @@ Only transitive dependencies of the declared build targets are included. Build-t
 
 ## How design is tested
 
-To run tests
+Two layers: unit tests over the generator internals, and an end-to-end
+integration test that builds a real project through the public `sbom()` macro.
+
 ```bash
-# From sbom-tool/ — run all SBOM tests
+# From sbom-tool/ — unit tests, against captured fixtures
 bazel test //tests/...
+
+# From sbom-tool/examples/dummy_project/ — end-to-end, against a real build
+bazel test //...
 ```
 
 Sbom was also tested by external tool
 https://sbomgenerator.com/tools/validator
+
+### End-to-end integration test
+
+`examples/dummy_project` is a small C++ and Rust project that consumes these
+rules the way a downstream repository does: it declares `bazel_dep(name =
+"score_sbom")` (resolved through `local_path_override` to the checkout), calls
+`sbom()` on a `cc_binary` and a `rust_binary`, and asserts the resulting SPDX
+and CycloneDX documents in `sbom_test.py`.
+
+It is a **separate Bazel module**, listed in the repository root `.bazelignore`,
+so it must be built from its own directory and never leaks its dependencies
+(`nlohmann_json`, `rules_rust`, `score_crates`) into consumers of `@score_sbom`.
+Its `MODULE.bazel.lock` is tracked in git for the same reason the root one is,
+plus one of its own: the `sbom()` target consumes the lockfile as a build input,
+so a checkout without it fails to build.
+
+`auto_cdxgen` and `auto_crates_cache` are off, so the test needs no npm and
+reaches no network at build time; it covers the aspect, the rule and the module
+extension — the parts no fixture can cover — rather than full license
+enrichment.
 
 ### Tests description
 
@@ -209,6 +234,7 @@ https://sbomgenerator.com/tools/validator
 | `test_generate_cpp_metadata_cache.py` | `test_generate_cpp_metadata_cache` | `convert_cdxgen_to_cache()`: version, license (id/name/expression/AND), supplier (name/publisher fallback), PURL, URL from externalReferences, description |
 | `test_spdx_to_github_snapshot.py` | `test_spdx_to_github_snapshot` | `convert_spdx_to_snapshot()`: top-level fields; direct vs. indirect classification; package filtering; manifest naming; `pkg:generic/` PURL support |
 | `test_real_sbom_integration.py` | `test_real_sbom_integration` | End-to-end generation from captured `reference_integration` fixtures (baselibs, kyron, orchestrator): SPDX and CycloneDX validity; package counts; crate license enrichment and checksums; module version enrichment from the lockfile; `LicenseRef-*` declarations; bom-ref uniqueness; every SPDXID resolving to a real node |
+| `examples/dummy_project/sbom_test.py` | `//:sbom_test` (in `examples/dummy_project`) | The SBOM of an actual Bazel build: SPDX 2.3 and CycloneDX 1.6 headers, root component identity, one C++ (`nlohmann_json`) and one Rust (`serde`) dependency proving both toolchain paths were traversed, license fields on every package, no dangling SPDXID or bom-ref, and the two formats agreeing on the component set |
 
 ## Development
 
@@ -248,6 +274,7 @@ Every pull request runs:
 | Workflow | Job | What it does |
 |---|---|---|
 | `tests.yml` | `unit_tests` | `bazel test //tests/...` |
+| `tests.yml` | `integration_test` | `bazel test //...` in `examples/dummy_project` — builds the example and checks its SBOM |
 | `format.yml` | `formatting-check` | `//tools:format.check` (`ruff format`, buildifier, yamlfmt) via `eclipse-score/cicd-workflows` |
 | `copyright.yml` | `copyright-check` | `//tools:copyright-check` via `eclipse-score/cicd-workflows` |
 | `bzlmod-lock.yml` | `bzlmod-lock` | `bazel mod tidy` + `bazel mod deps --lockfile_mode=error` via `eclipse-score/cicd-workflows` |
