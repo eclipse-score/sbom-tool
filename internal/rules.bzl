@@ -76,6 +76,8 @@ def _sbom_impl(ctx):
     # Collect MODULE.bazel files from dependency modules for version extraction
     dep_module_paths = [f.path for f in ctx.files.dep_module_files]
     module_lock_paths = [f.path for f in ctx.files.module_lockfiles]
+    python_lock_paths = [f.path for f in ctx.files.python_lockfiles]
+    java_file_paths = [f.path for f in ctx.files.java_files]
 
     deps_data = {
         "external_repos": all_external_repos.to_list(),
@@ -85,6 +87,8 @@ def _sbom_impl(ctx):
         "exclude_patterns": exclude_patterns,
         "dep_module_files": dep_module_paths,
         "module_lockfiles": module_lock_paths,
+        "python_lockfiles": python_lock_paths,
+        "java_files": java_file_paths,
         "config": {
             "producer_name": ctx.attr.producer_name,
             "producer_url": ctx.attr.producer_url,
@@ -119,7 +123,7 @@ def _sbom_impl(ctx):
         args.add("--cyclonedx-output", cdx_out)
 
     # Build inputs list
-    generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles
+    generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles + ctx.files.python_lockfiles + ctx.files.java_files
 
     # Auto-generate crates metadata cache if enabled and a lockfile is provided
     crates_cache = None
@@ -179,6 +183,24 @@ def _sbom_impl(ctx):
     if crates_cache:
         args.add("--crates-cache", crates_cache)
         generator_inputs.append(crates_cache)
+
+    python_cache = None
+    if ctx.files.python_lockfiles and ctx.attr.auto_python_cache:
+        python_cache = ctx.actions.declare_file(ctx.attr.name + "_python_metadata.json")
+        ctx.actions.run(
+            inputs = ctx.files.python_lockfiles,
+            outputs = [python_cache],
+            executable = ctx.executable._python_cache,
+            arguments = [python_cache.path] + [f.path for f in ctx.files.python_lockfiles],
+            mnemonic = "PythonMetadataGenerate",
+            progress_message = "Generating Python metadata cache for %s" % ctx.attr.name,
+            execution_requirements = {"requires-network": ""},
+            use_default_shell_env = True,
+        )
+
+    if python_cache:
+        args.add("--python-cache", python_cache)
+        generator_inputs.append(python_cache)
 
     # Run Python generator
     ctx.actions.run(
@@ -268,6 +290,20 @@ sbom_rule = rule(
             allow_files = True,
             doc = "MODULE.bazel.lock files for crate metadata extraction (e.g., from score_crates and workspace)",
         ),
+        "python_lockfiles": attr.label_list(
+            allow_files = True,
+            default = [],
+            doc = "pip-compile requirements lockfiles for Python metadata extraction",
+        ),
+        "java_files": attr.label_list(
+            allow_files = True,
+            default = [],
+            doc = "Java/JAR files to inventory as file-level components",
+        ),
+        "auto_python_cache": attr.bool(
+            default = True,
+            doc = "Automatically collect Python package metadata from lockfiles",
+        ),
         "cdxgen_sbom": attr.label(
             allow_single_file = [".json"],
             doc = "Optional CycloneDX JSON from cdxgen for C++ dependency enrichment",
@@ -288,6 +324,11 @@ sbom_rule = rule(
         "_crates_cache_script": attr.label(
             default = "//scripts:generate_crates_metadata_cache.py",
             allow_single_file = True,
+        ),
+        "_python_cache": attr.label(
+            default = "//scripts:generate_python_metadata_cache",
+            executable = True,
+            cfg = "exec",
         ),
         "_generator": attr.label(
             default = "//internal/generator:sbom_generator",

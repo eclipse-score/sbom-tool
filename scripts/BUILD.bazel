@@ -17,11 +17,23 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "generate_crates_metadata_cache.py",
+    "generate_python_metadata_cache.py",
 ])
 
 py_library(
     name = "generate_crates_metadata_cache",
     srcs = ["generate_crates_metadata_cache.py"],
+)
+
+py_binary(
+    name = "generate_python_metadata_cache",
+    srcs = ["generate_python_metadata_cache.py"],
+    main = "generate_python_metadata_cache.py",
+)
+
+py_library(
+    name = "generate_python_metadata_cache_lib",
+    srcs = ["generate_python_metadata_cache.py"],
 )
 
 py_library(

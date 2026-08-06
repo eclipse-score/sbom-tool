@@ -97,6 +97,7 @@ import unittest
 import unittest.mock
 
 from internal.generator.sbom_generator import (
+    collect_java_file_components,
     deduplicate_components,
     filter_repos,
     main,
@@ -105,6 +106,27 @@ from internal.generator.sbom_generator import (
     parse_module_lockfiles,
     resolve_component,
 )
+
+
+class TestJavaFileComponents(unittest.TestCase):
+    """Java and JAR artifacts are represented with reproducible checksums."""
+
+    def test_collects_jar_name_size_and_sha256(self):
+        with tempfile.NamedTemporaryFile(suffix=".jar", delete=False) as jar:
+            jar.write(b"plantuml-test-artifact")
+            jar_path = jar.name
+        try:
+            components = collect_java_file_components([jar_path])
+        finally:
+            os.unlink(jar_path)
+
+        self.assertEqual(len(components), 1)
+        self.assertEqual(components[0]["name"], os.path.basename(jar_path))
+        self.assertEqual(components[0]["type"], "file")
+        self.assertEqual(
+            components[0]["checksum"],
+            "b05f25a893299cf4ef571b8283b4158bd6c7320b6c9733dd6f44b51a4142557c",
+        )
 
 
 # ---------------------------------------------------------------------------

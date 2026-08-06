@@ -53,6 +53,12 @@ score_py_pytest(
 )
 
 score_py_pytest(
+    name = "test_generate_python_metadata_cache",
+    srcs = ["test_generate_python_metadata_cache.py"],
+    deps = ["//scripts:generate_python_metadata_cache_lib"],
+)
+
+score_py_pytest(
     name = "test_generate_cpp_metadata_cache",
     srcs = ["test_generate_cpp_metadata_cache.py"],
     deps = ["//scripts:generate_cpp_metadata_cache"],

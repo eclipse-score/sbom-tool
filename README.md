@@ -37,10 +37,75 @@ sbom(
         "@score_crates//:MODULE.bazel.lock",
         ":MODULE.bazel.lock",
     ],
+    python_lockfiles = ["//path/to:requirements.txt.lock"],
     auto_crates_cache = True,
     auto_cdxgen = True,
 )
 ```
+
+## SBOM modes
+
+The rule supports two complementary SBOM modes. The modes are selected by the
+consumer's `BUILD` file; they are not separate Bazel rules.
+
+### Product mode
+
+Product mode describes software delivered by the project. Pass the product or
+runtime binaries and libraries in `targets`, and enable the collectors needed
+for their shipped dependencies. Product SBOMs commonly emit both SPDX and
+CycloneDX:
+
+```starlark
+sbom(
+    name = "product_sbom",
+    targets = ["//app:runtime_binary"],
+    component_name = "my_product",
+    output_formats = ["spdx", "cyclonedx"],
+    module_lockfiles = [":MODULE.bazel.lock"],
+    auto_cdxgen = True,
+    auto_crates_cache = True,
+)
+```
+
+### Tool qualification mode
+
+Tool mode describes software used to build, test, or generate documentation.
+It is kept separate from product mode because these components are not product
+runtime dependencies. Pass build-tool and documentation targets, use SPDX for
+the qualification inventory when required, and add the lockfiles and files
+used by those tools:
+
+```starlark
+sbom(
+    name = "build_tools_sbom",
+    targets = [
+      "//:docs",
+      "//tools:build_tool",
+      "@docs_as_code//:plantuml",
+    ],
+    component_name = "my_product_build_tools",
+    output_formats = ["spdx"],
+    auto_cdxgen = False,
+    auto_crates_cache = False,
+    python_lockfiles = [
+      "//tools:requirements.txt.lock",
+      "@docs_as_code//:requirements_lock",
+    ],
+    java_files = ["@docs_as_code//:plantuml.jar"],
+    exclude_patterns = ["rules_python++pip+"],
+)
+```
+
+The Python collector reads pinned pip-compile lockfiles and emits PyPI
+components with versions and SHA-256 hashes. The Java collector inventories
+declared `.jar` or other Java files as file-level components, including the
+file name, size, and SHA-256 checksum. This is useful for tools such as
+PlantUML, where the Python integration and the Java JAR are separate artifacts.
+
+The host Java runtime itself (for example, the `java` executable installed by
+the operating system) is not a Bazel file input and therefore is not collected
+by `java_files`; it must be supplied through a separate host-tool inventory if
+the qualification scope requires the JDK installation as well.
 
 ### Parameters
 
@@ -51,6 +116,9 @@ sbom(
 | `component_name` | rule `name` | Name of the root component written into the SBOM; defaults to the rule name if omitted. |
 | `component_version` | `None` | Version string for the root component; auto-detected from the module graph when omitted. |
 | `module_lockfiles` | `[]` | One or more `MODULE.bazel.lock` files used to extract dependency versions and SHA-256 checksums; C++ projects need only the workspace lockfile (`:MODULE.bazel.lock`), Rust projects should also pass `@score_crates//:MODULE.bazel.lock` to cover crate versions and checksums. |
+| `python_lockfiles` | `[]` | One or more pip-compile lockfiles (`requirements.txt.lock`) used to add pinned PyPI packages, SHA-256 hashes, and license expressions from DASH. Packages that DASH cannot verify retain `NOASSERTION`; descriptions are not enriched yet and remain `Missing`. |
+| `auto_python_cache` | `True` | Generates Python package metadata from `python_lockfiles`; set to `False` to disable it. |
+| `java_files` | `[]` | Java or JAR files to inventory as file-level components. Each file gets its name, size, and SHA-256 checksum; this does not inventory the host Java runtime. |
 | `auto_crates_cache` | `True` | Runs `generate_crates_metadata_cache` at build time (requires network) to fetch Rust crate license and supplier data from dash-license-scan and crates.io; set to `False` only as a workaround for air-gapped or offline build environments — doing so produces a non-compliant SBOM where all Rust crates show `NOASSERTION` for license, supplier, and description. Has no effect when no lockfiles are provided (pure C++ projects). |
 | `cargo_lockfile` | `None` | Path to a `Cargo.lock` file for crate enumeration; not needed when `module_lockfiles` is provided, as a synthetic `Cargo.lock` is generated from it automatically. **Deprecated — will be removed in a future release.** |
 | `cdxgen_sbom` | `None` | Label to a pre-generated cdxgen CycloneDX JSON file; alternative to `auto_cdxgen` for C++ projects where cdxgen cannot run inside the Bazel build (e.g. CI environment without npm). Run cdxgen manually and pass its output here. Ignored for pure Rust projects. |
@@ -137,13 +205,13 @@ Generated in `bazel-bin/`:
 **Data sources:**
 - **Bazel module graph** — version, PURL, and registry info for `bazel_dep` modules
 - **Bazel aspect** — transitive dependency graph and external repo dependency edges
-- **dash-license-scan** — licenses data
+- **dash-license-scan** — Rust and Python license data from the Eclipse Foundation and ClearlyDefined services
 - **crates.io API** — description and supplier for Rust crates
 - **cdxgen** — C++ dependency licenses, descriptions, and suppliers
 
 ### Automated Metadata Sources
 
-All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, `http_archive` rules, dash-license-scan (Rust), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
+All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, `http_archive` rules, dash-license-scan (Rust and Python), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
 
 CPE, aliases, and pedigree are the only fields that may be set manually via `sbom_ext.license()`, as they represent identity and provenance annotations that cannot be auto-deduced.
 
@@ -177,6 +245,7 @@ Only transitive dependencies of the declared build targets are included. Build-t
 ### License Data by Language
 
 - **Rust**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined); descriptions and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup.
+- **Python**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined), using `pypi/pypi/-/<name>/<version>` identifiers generated from pip-compile lockfiles. Descriptions and suppliers are not enriched yet.
 - **C++**: Licenses, descriptions, and suppliers via cdxgen source tree scan. There is no dash-license-scan integration for C++ — it does not support `pkg:generic/...` PURLs used by BCR modules. If cdxgen cannot resolve a component, its description is set to `"Missing"` and its license field is empty.
 
 ### Output Format Versions

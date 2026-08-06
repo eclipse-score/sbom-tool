@@ -20,6 +20,7 @@ extension, then generates SBOM files in SPDX 2.3 and CycloneDX 1.6 formats.
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -157,6 +158,28 @@ def load_crates_cache(cache_path: str | None = None) -> dict[str, Any]:
     """
     if not cache_path:
         return {}
+
+
+def collect_java_file_components(file_paths: list[str]) -> list[dict[str, Any]]:
+    """Create file-level components for declared Java and JAR artifacts."""
+    components = []
+    for file_path in file_paths:
+        path = Path(file_path)
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            size = path.stat().st_size
+        except OSError:
+            continue
+        components.append({
+            "name": path.name,
+            "version": "file",
+            "type": "file",
+            "source": "java",
+            "url": "NOASSERTION",
+            "checksum": digest,
+            "description": f"Java artifact {path.name} ({size} bytes)",
+        })
+    return components
     try:
         with open(cache_path, encoding="utf-8") as f:
             return json.load(f)
@@ -410,6 +433,7 @@ def main() -> int:
     parser.add_argument("--spdx-output", help="SPDX 2.3 JSON output file")
     parser.add_argument("--cyclonedx-output", help="CycloneDX 1.6 output file")
     parser.add_argument("--crates-cache", help="Path to crates_metadata.json override")
+    parser.add_argument("--python-cache", help="Path to Python package metadata cache")
     parser.add_argument(
         "--cdxgen-sbom",
         help="Path to cdxgen-generated CycloneDX JSON for C++ enrichment",
@@ -451,12 +475,23 @@ def main() -> int:
     # Load crates metadata cache (licenses + checksums + versions)
     crates_cache = load_crates_cache(args.crates_cache)
 
+    python_cache = {}
+    if args.python_cache:
+        try:
+            with open(args.python_cache, encoding="utf-8") as f:
+                python_cache = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            python_cache = {}
+
     # Add crates cache to metadata
     if crates_cache:
         if "crates" not in metadata:
             metadata["crates"] = {}
         for name, cache_data in crates_cache.items():
             metadata["crates"].setdefault(name, cache_data)
+
+    components = list(python_cache.values())
+    components.extend(collect_java_file_components(data.get("java_files", [])))
 
     # Apply BCR known licenses and user overrides to modules
     apply_known_licenses(metadata)
@@ -472,7 +507,7 @@ def main() -> int:
     filtered_repos = filter_repos(external_repos, exclude_patterns)
 
     # Build component list with metadata
-    components = []
+    components.extend([])
 
     for repo in filtered_repos:
         component = resolve_component(repo, metadata)
@@ -502,7 +537,7 @@ def main() -> int:
     # (from an edge destination) are not treated as distinct components — both
     # would otherwise produce the same sanitised bom-ref, creating duplicates.
     existing_names = {c.get("name", "").rstrip("+") for c in components}
-    for dst in sorted(edge_dst_repos):
+    for dst in filter_repos(sorted(edge_dst_repos), exclude_patterns):
         if dst.rstrip("+") not in existing_names:
             component = resolve_component(dst, metadata)
             if component:

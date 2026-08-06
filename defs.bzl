@@ -40,6 +40,10 @@ def sbom(
         auto_cdxgen = False,
         cargo_lockfile = None,
         module_lockfiles = None,
+        python_lockfiles = None,
+        java_files = None,
+        testonly = False,
+        auto_python_cache = True,
         auto_crates_cache = True,
         output_formats = ["spdx", "cyclonedx"],
         producer_name = "Eclipse Foundation",
@@ -79,6 +83,9 @@ def sbom(
         auto_cdxgen: Run cdxgen automatically when no cdxgen_sbom is provided
         cargo_lockfile: Optional Cargo.lock for crates metadata cache generation
         module_lockfiles: MODULE.bazel.lock files for crate metadata extraction (e.g., from score_crates and workspace)
+        python_lockfiles: pip-compile requirements lockfiles for Python package metadata.
+        java_files: Java/JAR files to inventory as file-level components.
+        auto_python_cache: Run Python metadata collection when python_lockfiles are provided
         auto_crates_cache: Run crates metadata cache generation when cargo_lockfile or module_lockfiles is provided
         output_formats: List of formats to generate ("spdx", "cyclonedx")
         producer_name: SBOM producer organization name
@@ -138,6 +145,10 @@ def sbom(
         auto_cdxgen = auto_cdxgen,
         cargo_lockfile = cargo_lockfile,
         module_lockfiles = module_lockfiles if module_lockfiles else [],
+        python_lockfiles = python_lockfiles if python_lockfiles else [],
+        java_files = java_files if java_files else [],
+        testonly = testonly,
+        auto_python_cache = auto_python_cache,
         auto_crates_cache = auto_crates_cache,
         output_formats = output_formats,
         producer_name = producer_name,
