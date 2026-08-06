@@ -216,8 +216,10 @@ Its `MODULE.bazel.lock` is tracked in git for the same reason the root one is,
 plus one of its own: the `sbom()` target consumes the lockfile as a build input,
 so a checkout without it fails to build.
 
-`auto_cdxgen` and `auto_crates_cache` are off, so the test needs no npm and
-reaches no network at build time; it covers the aspect, the rule and the module
+`auto_cdxgen` and `auto_crates_cache` are off, so the test needs no npm and no
+calls to dash-license-scan or crates.io during SBOM generation. A cold build
+still fetches bzlmod modules and toolchains from the configured registries like
+any other Bazel build. The test covers the aspect, the rule and the module
 extension — the parts no fixture can cover — rather than full license
 enrichment.
 

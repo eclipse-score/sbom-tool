@@ -23,8 +23,11 @@ import json
 import pathlib
 import unittest
 
-SPDX_PATH = pathlib.Path("dummy_sbom.spdx.json")
-CDX_PATH = pathlib.Path("dummy_sbom.cdx.json")
+# Bazel does not guarantee a working directory, so the SBOMs are located
+# relative to this file: both land in the same runfiles package.
+_HERE = pathlib.Path(__file__).parent
+SPDX_PATH = _HERE / "dummy_sbom.spdx.json"
+CDX_PATH = _HERE / "dummy_sbom.cdx.json"
 
 # One dependency per language, to prove both toolchain paths were traversed.
 CPP_DEPENDENCY = "nlohmann_json"

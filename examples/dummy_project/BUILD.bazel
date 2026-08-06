@@ -28,8 +28,10 @@ sbom(
     name = "dummy_sbom",
     # auto_cdxgen needs npm + @cyclonedx/cdxgen on the build machine, and
     # auto_crates_cache reaches out to dash-license-scan and crates.io at build
-    # time. Both are left off so the smoke test stays hermetic and offline; a
-    # real project should enable them to get full C++ and Rust license data.
+    # time. Both are left off so the smoke test needs no extra tooling and no
+    # network access beyond the module and toolchain downloads any cold Bazel
+    # build performs; a real project should enable them to get full C++ and
+    # Rust license data.
     auto_cdxgen = False,
     auto_crates_cache = False,
     component_name = "score_sbom_dummy_project",
