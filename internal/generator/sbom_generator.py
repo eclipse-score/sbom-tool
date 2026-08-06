@@ -158,6 +158,11 @@ def load_crates_cache(cache_path: str | None = None) -> dict[str, Any]:
     """
     if not cache_path:
         return {}
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def collect_java_file_components(file_paths: list[str]) -> list[dict[str, Any]]:
@@ -182,11 +187,6 @@ def collect_java_file_components(file_paths: list[str]) -> list[dict[str, Any]]:
             }
         )
     return components
-    try:
-        with open(cache_path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
 
 
 # Known licenses for Bazel Central Registry (BCR) C++ modules.
