@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# *******************************************************************************
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+# *******************************************************************************
 
 """Collect Python package metadata from pip-compile lockfiles."""
 
@@ -11,7 +23,9 @@ import tempfile
 from pathlib import Path
 
 
-PACKAGE_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\[.*\]==([^\s\\]+)|^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)")
+PACKAGE_RE = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\[.*\]==([^\s\\]+)|^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)"
+)
 HASH_RE = re.compile(r"--hash=sha256[=:]([0-9a-fA-F]{64})")
 
 
@@ -104,9 +118,7 @@ def parse_dash_summary(summary_path: str) -> dict[str, str]:
             and identifier_parts[0:3] == ["pypi", "pypi", "-"]
             and license_expression
         ):
-            licenses[identifier_parts[3].lower().replace("_", "-")] = (
-                license_expression
-            )
+            licenses[identifier_parts[3].lower().replace("_", "-")] = license_expression
     return licenses
 
 
@@ -118,7 +130,9 @@ def enrich_python_licenses(
         summary_path = str(Path(temp_dir) / "summary.csv")
         if not run_dash_license_scan(lockfiles, summary_path):
             return
-        for package_name, license_expression in parse_dash_summary(summary_path).items():
+        for package_name, license_expression in parse_dash_summary(
+            summary_path
+        ).items():
             if package_name in packages:
                 packages[package_name]["license"] = license_expression
 

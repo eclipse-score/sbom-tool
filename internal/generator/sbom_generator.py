@@ -170,15 +170,17 @@ def collect_java_file_components(file_paths: list[str]) -> list[dict[str, Any]]:
             size = path.stat().st_size
         except OSError:
             continue
-        components.append({
-            "name": path.name,
-            "version": "file",
-            "type": "file",
-            "source": "java",
-            "url": "NOASSERTION",
-            "checksum": digest,
-            "description": f"Java artifact {path.name} ({size} bytes)",
-        })
+        components.append(
+            {
+                "name": path.name,
+                "version": "file",
+                "type": "file",
+                "source": "java",
+                "url": "NOASSERTION",
+                "checksum": digest,
+                "description": f"Java artifact {path.name} ({size} bytes)",
+            }
+        )
     return components
     try:
         with open(cache_path, encoding="utf-8") as f:
