@@ -16,6 +16,7 @@
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -84,6 +85,10 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
     writes the checker summary as CSV. Restricted or unverified packages are
     reported by DASH with a non-zero status, but the summary remains usable.
     """
+    cache_dir = tempfile.mkdtemp(prefix="dash-license-scan-")
+    env = os.environ.copy()
+    env["UV_CACHE_DIR"] = cache_dir
+    env["UV_TOOL_DIR"] = cache_dir
     command = [
         _find_uvx(),
         "--from",
@@ -94,13 +99,24 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
         *lockfiles,
     ]
     try:
-        result = subprocess.run(command, check=False, text=True, timeout=600)
+        result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=600,
+            env=env,
+        )
     except (OSError, subprocess.TimeoutExpired) as error:
         print(f"WARNING: DASH Python license scan unavailable: {error}")
         return False
     if result.returncode < 0:
         print(f"WARNING: DASH Python license scan was terminated: {result.returncode}")
         return False
+    if result.returncode != 0 and result.stderr:
+        print(
+            f"WARNING: DASH Python license scan reported errors: {result.stderr.strip()}"
+        )
     return Path(summary_path).is_file()
 
 

@@ -123,7 +123,7 @@ def _sbom_impl(ctx):
         args.add("--cyclonedx-output", cdx_out)
 
     # Build inputs list
-    generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles + ctx.files.python_lockfiles + ctx.files.java_files
+    generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles + ctx.files.java_files
 
     # Auto-generate crates metadata cache if enabled and a lockfile is provided
     crates_cache = None

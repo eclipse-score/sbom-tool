@@ -91,6 +91,7 @@ Run          : bazel test //sbom/tests:test_sbom_generator
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -121,7 +122,10 @@ class TestJavaFileComponents(unittest.TestCase):
             os.unlink(jar_path)
 
         self.assertEqual(len(components), 1)
-        self.assertEqual(components[0]["name"], os.path.basename(jar_path))
+        self.assertRegex(
+            components[0]["name"],
+            rf"^{re.escape(os.path.basename(jar_path))}-[0-9a-f]{{12}}$",
+        )
         self.assertEqual(components[0]["type"], "file")
         self.assertEqual(
             components[0]["checksum"],

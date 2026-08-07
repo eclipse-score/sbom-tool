@@ -171,13 +171,17 @@ def collect_java_file_components(file_paths: list[str]) -> list[dict[str, Any]]:
     for file_path in file_paths:
         path = Path(file_path)
         try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
             size = path.stat().st_size
+            digest_hash = hashlib.sha256()
+            with path.open("rb") as artifact:
+                for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                    digest_hash.update(chunk)
+            digest = digest_hash.hexdigest()
         except OSError:
             continue
         components.append(
             {
-                "name": path.name,
+                "name": f"{path.name}-{digest[:12]}",
                 "version": "file",
                 "type": "file",
                 "source": "java",
