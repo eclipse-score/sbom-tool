@@ -11,11 +11,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 
-module(
-    name = "score_sbom",
-    version = "0.0.1",
-    compatibility_level = 1,
-)
+module(name = "score_sbom")
 
 bazel_dep(name = "rules_python", version = "1.5.1")
 
