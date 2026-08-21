@@ -38,7 +38,6 @@ def sbom(
         dep_module_files = None,
         cdxgen_sbom = None,
         auto_cdxgen = False,
-        cdxgen_version = "12.1.4",
         cargo_lockfile = None,
         module_lockfiles = None,
         python_lockfiles = None,
@@ -56,6 +55,7 @@ def sbom(
         sbom_tools = None,
         namespace = None,
         exclude_patterns = None,
+        cdxgen_version = "12.1.4",
         **kwargs):
     """Generates SBOM for specified targets.
 

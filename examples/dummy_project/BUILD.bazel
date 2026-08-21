@@ -26,11 +26,11 @@ exports_files(["MODULE.bazel.lock"])
 #   dummy_sbom.cdx.json
 sbom(
     name = "dummy_sbom",
-    # auto_cdxgen needs npm + @cyclonedx/cdxgen on the build machine, and
-    # auto_crates_cache reaches out to dash-license-scan and crates.io at build
-    # time. Both are left off so the smoke test needs no extra tooling and no
+    # auto_cdxgen runs cdxgen via the Bazel-managed Node toolchain, and
+    # auto_crates_cache reaches out to crates.io at build time; both need
     # network access beyond the module and toolchain downloads any cold Bazel
-    # build performs; a real project should enable them to get full C++ and
+    # build performs. Both are left off so the smoke test needs no extra
+    # network access; a real project should enable them to get full C++ and
     # Rust license data.
     auto_cdxgen = False,
     auto_crates_cache = False,
@@ -54,4 +54,35 @@ py_test(
     name = "sbom_test",
     srcs = ["sbom_test.py"],
     data = [":dummy_sbom"],
+)
+
+# Opt-in smoke test for the auto_cdxgen Node-toolchain execution path. Kept
+# separate from dummy_sbom/sbom_test above (and tagged "manual") because it
+# needs real network access to resolve the Node toolchain and npm-exec the
+# pinned cdxgen package, unlike the rest of this hermetic no-network build.
+# Run explicitly with:
+#   bazel test --test_tag_filters=-manual //:cdxgen_smoke_test
+sbom(
+    name = "dummy_sbom_cdxgen_smoke",
+    auto_cdxgen = True,
+    auto_crates_cache = False,
+    component_name = "score_sbom_dummy_project_cdxgen_smoke",
+    component_version = "0.1.0",
+    module_lockfiles = [":MODULE.bazel.lock"],
+    output_formats = ["cyclonedx"],
+    tags = [
+        "manual",
+        "requires-network",
+    ],
+    targets = ["//cpp:app"],
+)
+
+py_test(
+    name = "cdxgen_smoke_test",
+    srcs = ["cdxgen_smoke_test.py"],
+    data = [":dummy_sbom_cdxgen_smoke"],
+    tags = [
+        "manual",
+        "requires-network",
+    ],
 )

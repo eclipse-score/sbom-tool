@@ -318,12 +318,27 @@ def _normalize_license_expression(license_expr: str) -> str:
     return " OR ".join(part.strip() for part in license_expr.split("/") if part.strip())
 
 
-def _fetch_one_crate_meta(name: str) -> tuple[str, dict[str, str]]:
+def _cratesio_get(url: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "score-sbom-tool (https://eclipse.dev/score)"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def _fetch_one_crate_meta(name: str, version: str) -> tuple[str, dict[str, str]]:
     """Fetch metadata for a single crate from crates.io API.
 
-    Returns (name, {description, supplier}) dict.
+    Returns (name, {description, supplier, license}) dict.
     If the crate isn't found, retries with platform suffixes stripped
     (e.g. "-qnx8") to find the upstream crate.
+
+    The crate-level endpoint (used for description/supplier) has no license
+    field; license is only available per-version, so it is fetched from the
+    version-scoped endpoint pinned to the exact locked version. Fetching by
+    crate name alone would silently return the current/latest release's
+    license, which can differ from the locked version's.
     """
     candidates = [name]
     # Platform-specific forks (e.g. iceoryx2-bb-lock-free-qnx8 -> iceoryx2-bb-lock-free)
@@ -332,49 +347,57 @@ def _fetch_one_crate_meta(name: str) -> tuple[str, dict[str, str]]:
             candidates.append(name[: -len(suffix)])
 
     for candidate in candidates:
-        url = f"https://crates.io/api/v1/crates/{candidate}"
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "score-sbom-tool (https://eclipse.dev/score)"},
-        )
+        desc = ""
+        supplier = ""
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
+            data = _cratesio_get(f"https://crates.io/api/v1/crates/{candidate}")
             crate = data.get("crate", {})
             desc = (crate.get("description") or "").strip()
             supplier = _extract_supplier(crate.get("repository", ""))
-            license_expr = _normalize_license_expression(
-                (crate.get("license") or "").strip()
-            )
-            if desc or supplier or license_expr:
-                return name, {
-                    "description": desc,
-                    "supplier": supplier,
-                    "license": license_expr,
-                }
         except Exception:
-            continue
+            pass
+
+        license_expr = ""
+        try:
+            version_data = _cratesio_get(
+                f"https://crates.io/api/v1/crates/{candidate}/{version}"
+            )
+            license_expr = _normalize_license_expression(
+                (version_data.get("version", {}).get("license") or "").strip()
+            )
+        except Exception:
+            pass
+
+        if desc or supplier or license_expr:
+            return name, {
+                "description": desc,
+                "supplier": supplier,
+                "license": license_expr,
+            }
     return name, {}
 
 
 def fetch_crate_metadata_from_cratesio(
-    crate_names: list[str],
+    crate_versions: dict[str, str],
 ) -> dict[str, dict[str, str]]:
-    """Fetch metadata (description, supplier) from crates.io API (parallel).
+    """Fetch metadata (description, supplier, license) from crates.io API (parallel).
 
     Args:
-        crate_names: List of crate names to look up
+        crate_versions: Dict mapping crate name to its locked version
 
     Returns:
-        Dict mapping crate name to {description, supplier}
+        Dict mapping crate name to {description, supplier, license}
     """
-    total = len(crate_names)
+    total = len(crate_versions)
     print(f"Fetching metadata from crates.io for {total} crates...")
 
     metadata: dict[str, dict[str, str]] = {}
     done = 0
     with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(_fetch_one_crate_meta, n): n for n in crate_names}
+        futures = {
+            pool.submit(_fetch_one_crate_meta, name, version): name
+            for name, version in crate_versions.items()
+        }
         for future in as_completed(futures):
             name, meta = future.result()
             if meta:
@@ -385,8 +408,10 @@ def fetch_crate_metadata_from_cratesio(
 
     with_desc = sum(1 for m in metadata.values() if m.get("description"))
     with_supplier = sum(1 for m in metadata.values() if m.get("supplier"))
+    with_license = sum(1 for m in metadata.values() if m.get("license"))
     print(
-        f"Retrieved from crates.io: {with_desc} descriptions, {with_supplier} suppliers"
+        f"Retrieved from crates.io: {with_desc} descriptions, "
+        f"{with_supplier} suppliers, {with_license} licenses"
     )
     return metadata
 
@@ -453,7 +478,9 @@ def generate_cache(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     # Fetch descriptions + suppliers from crates.io (parallel, ~10 concurrent requests)
-    cratesio_meta = fetch_crate_metadata_from_cratesio(list(crates.keys()))
+    cratesio_meta = fetch_crate_metadata_from_cratesio(
+        {name: info["version"] for name, info in crates.items()}
+    )
 
     # Build final cache
     cache: dict[str, dict[str, Any]] = {}

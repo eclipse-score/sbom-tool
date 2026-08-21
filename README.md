@@ -140,10 +140,15 @@ the qualification scope requires the JDK installation as well.
 These are needed on the build machine of a project that *uses* these rules. To
 work on this repository itself, see [Development](#development) instead.
 
-No host-level installation of `nvm`, `npm`, `node`, or `openjdk` is required when using this SBOM rule as intended.
+No host-level installation of `nvm`, `npm`, or `node` is required: both `auto_cdxgen`
+and `auto_crates_cache` run via Bazel-managed tooling (the Node toolchain and a
+Python `py_binary`, respectively).
 
-- `auto_cdxgen = True`: cdxgen is executed via Bazel-managed tooling.
-- `auto_crates_cache = True`: crate metadata cache generation is executed via Bazel-managed tooling.
+`python_lockfiles` is the one exception: when provided, `auto_python_cache`
+runs DASH license enrichment by default, which shells out to
+`uvx dash-license-scan` — a Java-based tool — so a host JRE is still required
+whenever `python_lockfiles` is used. `auto_crates_cache` does not have this
+dependency; it only uses the crates.io API by default.
 
 If your environment blocks required network access, set `auto_cdxgen = False` and provide `cdxgen_sbom` explicitly.
 

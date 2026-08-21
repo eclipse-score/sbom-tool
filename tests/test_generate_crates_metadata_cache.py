@@ -54,6 +54,7 @@ import unittest
 from unittest import mock
 
 from scripts.generate_crates_metadata_cache import (
+    _fetch_one_crate_meta,
     _normalize_license_expression,
     generate_cache,
     generate_synthetic_cargo_lock,
@@ -384,6 +385,32 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         )
 
         self.assertEqual(cache["serde"]["license"], "Apache-2.0")
+
+    @mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")
+    def test_fetch_one_crate_meta_uses_locked_version_for_license(self, mock_get):
+        """License must come from the locked version, not the crate's latest release.
+
+        The crates.io crate-level endpoint has no license field at all (it only
+        exists on the per-version endpoint), so a crate that changed its license
+        between the locked version and the latest release must still report the
+        locked version's license, not the latest one's.
+        """
+
+        def fake_get(url):
+            if url == "https://crates.io/api/v1/crates/relicensed":
+                return {
+                    "crate": {"description": "A crate", "repository": ""},
+                }
+            if url == "https://crates.io/api/v1/crates/relicensed/1.0.0":
+                return {"version": {"license": "MIT"}}
+            if url == "https://crates.io/api/v1/crates/relicensed/2.0.0":
+                return {"version": {"license": "Apache-2.0"}}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        mock_get.side_effect = fake_get
+
+        name, meta = _fetch_one_crate_meta("relicensed", "1.0.0")
+        self.assertEqual(meta["license"], "MIT")
 
 
 class TestEndToEndLicenseExtraction(unittest.TestCase):

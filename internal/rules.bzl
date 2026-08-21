@@ -146,6 +146,7 @@ def _sbom_impl(ctx):
             mnemonic = "CratesCacheGenerate",
             progress_message = "Generating crates metadata cache for %s" % ctx.attr.name,
             execution_requirements = {"requires-network": ""},
+            use_default_shell_env = True,
         )
 
     # Add cdxgen SBOM if provided; otherwise auto-generate if enabled
@@ -180,6 +181,11 @@ def _sbom_impl(ctx):
             # cdxgen needs to recursively scan source trees. Running sandboxed with
             # only declared file inputs makes the scan effectively empty.
             # npm exec also resolves/downloads the pinned cdxgen package.
+            # Known caveat: because the scanned tree isn't in `inputs`, Bazel's
+            # action cache doesn't see source edits under cdxgen_scan_root, so a
+            # rebuild that only touches those files (not module/BUILD files) can
+            # reuse a stale cdxgen output. Not introduced by this rule — the
+            # pre-toolchain implementation had this same gap.
             execution_requirements = {
                 "no-sandbox": "1",
                 "requires-network": "",
