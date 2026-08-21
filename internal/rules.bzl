@@ -152,17 +152,16 @@ def _sbom_impl(ctx):
     cdxgen_sbom = ctx.file.cdxgen_sbom
     if not cdxgen_sbom and ctx.attr.auto_cdxgen:
         # Use the Bazel-managed Node.js toolchain for hermetic execution.
-        # node is the hermetic binary; npm_sources contains the npm JS entry point
-        # and all its supporting files declared by the toolchain.
+        # node_info.npm is a self-contained wrapper executable (it resolves its
+        # own node + npm-cli.js internally), not a JS file to hand to node, so
+        # it must be run directly rather than passed as an argument to node.
         node_info = ctx.toolchains["@rules_nodejs//nodejs:toolchain_type"].nodeinfo
         cdxgen_sbom = ctx.actions.declare_file(ctx.attr.name + "_cdxgen.cdx.json")
         ctx.actions.run(
             outputs = [cdxgen_sbom],
-            tools = [node_info.node],
             inputs = node_info.npm_sources,
-            executable = node_info.node,
+            executable = node_info.npm,
             arguments = [
-                node_info.npm.path,
                 "exec",
                 "--yes",
                 "--package=@cyclonedx/cdxgen@{}".format(ctx.attr.cdxgen_version),
@@ -185,6 +184,7 @@ def _sbom_impl(ctx):
                 "no-sandbox": "1",
                 "requires-network": "",
             },
+            use_default_shell_env = True,
         )
 
     if cdxgen_sbom:
