@@ -14,11 +14,31 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from scripts.generate_python_metadata_cache import (
     parse_dash_summary,
     parse_requirements_lockfile,
+    run_dash_license_scan,
 )
+
+
+class TestRunDashLicenseScan(unittest.TestCase):
+    @patch("scripts.generate_python_metadata_cache.subprocess.run")
+    def test_uses_separate_uv_cache_and_tool_directories(self, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        run_dash_license_scan(["requirements.txt"], "summary.csv")
+
+        env = mock_run.call_args.kwargs["env"]
+        cache_dir = Path(env["UV_CACHE_DIR"])
+        tool_dir = Path(env["UV_TOOL_DIR"])
+        self.assertNotEqual(cache_dir, tool_dir)
+        self.assertEqual(cache_dir.parent, tool_dir.parent)
+        self.assertEqual(cache_dir.name, "cache")
+        self.assertEqual(tool_dir.name, "tools")
 
 
 class TestParseRequirementsLockfile(unittest.TestCase):

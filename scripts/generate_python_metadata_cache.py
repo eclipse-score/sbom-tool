@@ -87,8 +87,8 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
     """
     cache_dir = tempfile.mkdtemp(prefix="dash-license-scan-")
     env = os.environ.copy()
-    env["UV_CACHE_DIR"] = cache_dir
-    env["UV_TOOL_DIR"] = cache_dir
+    env["UV_CACHE_DIR"] = str(Path(cache_dir) / "cache")
+    env["UV_TOOL_DIR"] = str(Path(cache_dir) / "tools")
     command = [
         _find_uvx(),
         "--from",
