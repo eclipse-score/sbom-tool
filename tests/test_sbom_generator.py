@@ -758,8 +758,6 @@ class TestParseModuleLockfiles(unittest.TestCase):
         self.assertEqual(sb["version"], "0.2.13")
         self.assertEqual(sb["sha256"], "sha256-selected")
         self.assertEqual(sb["purl"], "pkg:github/eclipse-score/score_baselibs@0.2.13")
-        self.assertEqual(sb["license"], "Apache-2.0")
-        self.assertEqual(sb["supplier"], "Eclipse Foundation")
         self.assertEqual(sb["url"], "https://github.com/eclipse-score/score_baselibs")
 
 

@@ -80,8 +80,6 @@ def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]
                 "purl": purl,
             }
             if name.startswith("score_"):
-                entry["supplier"] = "Eclipse Foundation"
-                entry["license"] = "Apache-2.0"
                 entry["url"] = f"https://github.com/eclipse-score/{name}"
             modules[name] = entry
 
@@ -185,8 +183,6 @@ def parse_module_lockfiles(file_paths: list[str]) -> dict[str, dict[str, str]]:
             entry["sha256"] = sha
 
         if name.startswith("score_"):
-            entry["supplier"] = "Eclipse Foundation"
-            entry["license"] = "Apache-2.0"
             entry["url"] = f"https://github.com/eclipse-score/{name}"
 
         modules[name] = entry
@@ -274,14 +270,15 @@ BCR_KNOWN_LICENSES: dict[str, dict[str, str]] = {
 
 
 def apply_known_licenses(metadata: dict[str, Any]) -> None:
-    """Apply BCR known licenses and user license overrides to modules.
+    """Apply BCR known licenses, Eclipse S-CORE defaults, and user overrides to modules.
 
     Priority (highest to lowest):
     1. Module already has a license (skip).
     2. Exact match in metadata["licenses"] (user-declared via sbom_ext.license).
     3. Parent match in metadata["licenses"] (e.g., "boost" covers "boost.config").
-    4. BCR_KNOWN_LICENSES exact match.
-    5. BCR_KNOWN_LICENSES parent match (e.g., "boost" entry covers "boost.config").
+    4. S-CORE module default (Apache-2.0, Eclipse Foundation) for "score_*" modules.
+    5. BCR_KNOWN_LICENSES exact match.
+    6. BCR_KNOWN_LICENSES parent match (e.g., "boost" entry covers "boost.config").
 
     Args:
         metadata: Metadata dict with "modules" and "licenses" keys. Modified in place.
@@ -290,14 +287,8 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
     licenses = metadata.get("licenses", {})
 
     for module_name, module_data in modules.items():
-        if module_name.startswith("score_"):
-            if not module_data.get("license"):
-                module_data["license"] = "Apache-2.0"
-            if not module_data.get("supplier"):
-                module_data["supplier"] = "Eclipse Foundation"
-            if not module_data.get("url"):
-                module_data["url"] = f"https://github.com/eclipse-score/{module_name}"
-            continue
+        if module_name.startswith("score_") and not module_data.get("url"):
+            module_data["url"] = f"https://github.com/eclipse-score/{module_name}"
 
         if module_data.get("license"):
             continue  # Already has a license — do not overwrite
@@ -313,10 +304,17 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
             if parent in licenses:
                 license_source = licenses[parent]
 
-        # 3. BCR known licenses — exact match
+        # 3. Eclipse S-CORE module defaults (Apache-2.0, Eclipse Foundation)
+        if license_source is None and module_name.startswith("score_"):
+            license_source = {
+                "license": "Apache-2.0",
+                "supplier": "Eclipse Foundation",
+            }
+
+        # 4. BCR known licenses — exact match
         if license_source is None and module_name in BCR_KNOWN_LICENSES:
             license_source = BCR_KNOWN_LICENSES[module_name]
-        # 4. BCR known licenses — parent prefix match (e.g. boost.config → boost)
+        # 5. BCR known licenses — parent prefix match (e.g. boost.config → boost)
         if license_source is None and "." in module_name:
             parent = module_name.split(".")[0]
             if parent in BCR_KNOWN_LICENSES:
@@ -326,6 +324,8 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
             module_data["license"] = license_source["license"]
             if not module_data.get("supplier") and license_source.get("supplier"):
                 module_data["supplier"] = license_source["supplier"]
+            if not module_data.get("url") and license_source.get("url"):
+                module_data["url"] = license_source["url"]
 
 
 def normalize_name(name: str) -> str:

@@ -222,6 +222,52 @@ class TestApplyKnownLicenses(unittest.TestCase):
         # User's declaration should win over BCR_KNOWN_LICENSES["boost"]
         self.assertEqual(metadata["modules"]["boost.config"]["license"], "Apache-2.0")
 
+    def test_explicit_beats_score_default(self):
+        """User-declared license overrides the S-CORE module default (Apache-2.0)."""
+        metadata = {
+            "modules": {
+                "score_custom": {
+                    "version": "1.0.0",
+                    "purl": "pkg:github/eclipse-score/score_custom@1.0.0",
+                },
+            },
+            "licenses": {
+                "score_custom": {"license": "MIT", "supplier": "Custom Supplier"},
+            },
+        }
+        apply_known_licenses(metadata)
+
+        self.assertEqual(metadata["modules"]["score_custom"]["license"], "MIT")
+        self.assertEqual(
+            metadata["modules"]["score_custom"]["supplier"], "Custom Supplier"
+        )
+        self.assertEqual(
+            metadata["modules"]["score_custom"]["url"],
+            "https://github.com/eclipse-score/score_custom",
+        )
+
+    def test_score_module_default_applied_when_no_override(self):
+        """S-CORE module receives Apache-2.0 and Eclipse Foundation by default."""
+        metadata = {
+            "modules": {
+                "score_baselibs": {
+                    "version": "0.2.13",
+                    "purl": "pkg:github/eclipse-score/score_baselibs@0.2.13",
+                },
+            },
+            "licenses": {},
+        }
+        apply_known_licenses(metadata)
+
+        self.assertEqual(metadata["modules"]["score_baselibs"]["license"], "Apache-2.0")
+        self.assertEqual(
+            metadata["modules"]["score_baselibs"]["supplier"], "Eclipse Foundation"
+        )
+        self.assertEqual(
+            metadata["modules"]["score_baselibs"]["url"],
+            "https://github.com/eclipse-score/score_baselibs",
+        )
+
     # -- Preserves existing data ----------------------------------------------
 
     def test_existing_license_not_overwritten(self):
