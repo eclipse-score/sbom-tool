@@ -138,6 +138,12 @@ def sbom(
         "remote_",
     ]
 
+    all_exclude_patterns = list(default_exclude_patterns)
+    if exclude_patterns:
+        for p in exclude_patterns:
+            if p not in all_exclude_patterns:
+                all_exclude_patterns.append(p)
+
     sbom_rule(
         name = name,
         targets = targets,
@@ -162,6 +168,6 @@ def sbom(
         generation_context = generation_context if generation_context else "",
         sbom_tools = sbom_tools if sbom_tools else [],
         namespace = namespace if namespace else "https://eclipse.dev/score",
-        exclude_patterns = exclude_patterns if exclude_patterns else default_exclude_patterns,
+        exclude_patterns = all_exclude_patterns,
         **kwargs
     )

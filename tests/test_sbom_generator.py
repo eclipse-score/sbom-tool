@@ -741,6 +741,27 @@ class TestParseModuleLockfiles(unittest.TestCase):
         gt = result["googletest"]
         self.assertIn(gt["version"], gt["purl"])
 
+    def test_multiple_candidates_resolved_by_source_json(self):
+        """When multiple candidate versions exist, the one with source.json is selected."""
+        lockfile = {
+            "registryFileHashes": {
+                "https://raw.githubusercontent.com/eclipse-score/bazel_registry/main/modules/score_baselibs/0.2.11/MODULE.bazel": "sha-1",
+                "https://raw.githubusercontent.com/eclipse-score/bazel_registry/main/modules/score_baselibs/0.2.12/MODULE.bazel": "sha-2",
+                "https://raw.githubusercontent.com/eclipse-score/bazel_registry/main/modules/score_baselibs/0.2.13/MODULE.bazel": "sha-3",
+                "https://raw.githubusercontent.com/eclipse-score/bazel_registry/main/modules/score_baselibs/0.2.13/source.json": "sha256-selected",
+            }
+        }
+        path = self._write(lockfile)
+        result = parse_module_lockfiles([path])
+        self.assertIn("score_baselibs", result)
+        sb = result["score_baselibs"]
+        self.assertEqual(sb["version"], "0.2.13")
+        self.assertEqual(sb["sha256"], "sha256-selected")
+        self.assertEqual(sb["purl"], "pkg:github/eclipse-score/score_baselibs@0.2.13")
+        self.assertEqual(sb["license"], "Apache-2.0")
+        self.assertEqual(sb["supplier"], "Eclipse Foundation")
+        self.assertEqual(sb["url"], "https://github.com/eclipse-score/score_baselibs")
+
 
 # ---------------------------------------------------------------------------
 # mark_missing_cpp_descriptions

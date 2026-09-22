@@ -146,6 +146,8 @@ def _create_spdx_package(
         download_location = url
     elif source == "crates.io":
         download_location = f"https://crates.io/crates/{name}/{version}"
+    elif name.startswith("score_"):
+        download_location = f"https://github.com/eclipse-score/{name}"
     else:
         download_location = "NOASSERTION"
 
