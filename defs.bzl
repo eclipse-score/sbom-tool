@@ -50,6 +50,7 @@ def sbom(
         producer_url = "https://projects.eclipse.org/projects/automotive.score",
         component_name = None,
         component_version = None,
+        component_license = None,
         sbom_authors = None,
         generation_context = None,
         sbom_tools = None,
@@ -98,6 +99,7 @@ def sbom(
             PURL namespace falls back to ``eclipse-score``.
         component_name: Main component name (defaults to rule name)
         component_version: Component version string
+        component_license: SPDX license for the main component
         namespace: SBOM namespace URI (defaults to https://eclipse.dev/score)
         exclude_patterns: Repo patterns to exclude (e.g., build tools)
         **kwargs: Additional arguments passed to the underlying rule
@@ -164,6 +166,7 @@ def sbom(
         producer_url = producer_url,
         component_name = component_name if component_name else name,
         component_version = component_version if component_version else "",
+        component_license = component_license if component_license else "",
         sbom_authors = sbom_authors if sbom_authors else [],
         generation_context = generation_context if generation_context else "",
         sbom_tools = sbom_tools if sbom_tools else [],

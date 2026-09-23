@@ -141,6 +141,31 @@ class TestSpdxFormatter(unittest.TestCase):
         # Only root package
         self.assertEqual(len(packages), 1)
 
+    def test_score_packages_default_to_apache_license(self):
+        """SCORE packages without license metadata default to Apache-2.0."""
+        config = {**self.config, "component_name": "score_persistency"}
+        components = [{"name": "score_baselibs", "version": "0.2.13"}]
+
+        spdx = generate_spdx(components, config, self.timestamp)
+
+        root_package, score_package = spdx["packages"]
+        self.assertEqual(root_package["licenseDeclared"], "Apache-2.0")
+        self.assertEqual(score_package["licenseDeclared"], "Apache-2.0")
+
+    def test_component_license_overrides_score_default(self):
+        """Explicit license metadata remains authoritative for SCORE packages."""
+        components = [
+            {
+                "name": "score_baselibs",
+                "version": "0.2.13",
+                "license": "MIT",
+            }
+        ]
+
+        spdx = generate_spdx(components, self.config, self.timestamp)
+
+        self.assertEqual(spdx["packages"][1]["licenseDeclared"], "MIT")
+
     def test_generate_spdx_component_purl(self):
         """Test that component PURLs are properly set."""
         spdx = generate_spdx(self.components, self.config, self.timestamp)

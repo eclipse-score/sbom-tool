@@ -46,6 +46,9 @@ def generate_spdx(
     component_name = config.get("component_name", "unknown")
     component_version = config.get("component_version", "")
     producer_name = config.get("producer_name", "Eclipse Foundation")
+    component_license = _default_score_license(
+        component_name, config.get("component_license", "")
+    )
 
     doc_uuid = uuid.uuid4()
 
@@ -62,8 +65,8 @@ def generate_spdx(
         "supplier": f"Organization: {producer_name}",
         "primaryPackagePurpose": "APPLICATION",
         "filesAnalyzed": False,
-        "licenseConcluded": "NOASSERTION",
-        "licenseDeclared": "NOASSERTION",
+        "licenseConcluded": component_license or "NOASSERTION",
+        "licenseDeclared": component_license or "NOASSERTION",
         "copyrightText": "NOASSERTION",
     }
     packages.append(root_package)
@@ -131,7 +134,7 @@ def _create_spdx_package(
     name = component.get("name", "unknown")
     version = component.get("version", "unknown")
     purl = component.get("purl", "")
-    license_id = _normalize_spdx_license(component.get("license", ""))
+    license_id = _default_score_license(name, component.get("license", ""))
     description = component.get("description", "")
     supplier = component.get("supplier", "")
     comp_type = component.get("type", "library")
@@ -183,6 +186,14 @@ def _create_spdx_package(
         ]
 
     return package, spdx_id
+
+
+def _default_score_license(name: str, license_id: str) -> str:
+    """Use the SCORE default license when a score module has no metadata."""
+    normalized = _normalize_spdx_license(license_id)
+    if not normalized and name.startswith("score_"):
+        return "Apache-2.0"
+    return normalized
 
 
 def _map_type_to_purpose(comp_type: str) -> str:

@@ -94,6 +94,7 @@ def _sbom_impl(ctx):
             "producer_url": ctx.attr.producer_url,
             "component_name": ctx.attr.component_name if ctx.attr.component_name else ctx.attr.name,
             "component_version": ctx.attr.component_version,
+            "component_license": ctx.attr.component_license,
             "namespace": ctx.attr.namespace,
             "sbom_authors": ctx.attr.sbom_authors,
             "generation_context": ctx.attr.generation_context,
@@ -257,6 +258,10 @@ sbom_rule = rule(
         "component_version": attr.string(
             default = "",
             doc = "Component version",
+        ),
+        "component_license": attr.string(
+            default = "",
+            doc = "SPDX license for the main component",
         ),
         "sbom_authors": attr.string_list(
             default = [],
