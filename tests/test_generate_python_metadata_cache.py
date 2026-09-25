@@ -12,6 +12,7 @@
 # *******************************************************************************
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,26 @@ class TestRunDashLicenseScan(unittest.TestCase):
         self.assertEqual(cache_dir.parent, tool_dir.parent)
         self.assertEqual(cache_dir.name, "cache")
         self.assertEqual(tool_dir.name, "tools")
+
+    @patch("scripts.generate_python_metadata_cache.subprocess.run")
+    def test_timeout_returns_false(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired("uvx", 1800)
+
+        self.assertFalse(run_dash_license_scan(["requirements.txt"], "summary.csv"))
+
+    @patch("scripts.generate_python_metadata_cache.subprocess.run")
+    def test_empty_summary_returns_false(self, mock_run):
+        mock_run.return_value.returncode = 127
+        mock_run.return_value.stdout = "Dash Licenses Summary Output:\n"
+        mock_run.return_value.stderr = "ClearlyDefined lookup failed"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary_path = Path(temp_dir) / "summary.csv"
+            summary_path.touch()
+
+            self.assertFalse(
+                run_dash_license_scan(["requirements.txt"], str(summary_path))
+            )
 
 
 class TestParseRequirementsLockfile(unittest.TestCase):
