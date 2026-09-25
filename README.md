@@ -115,6 +115,7 @@ the qualification scope requires the JDK installation as well.
 | `targets` | *(required)* | Bazel targets whose transitive dependencies are included in the SBOM. |
 | `component_name` | rule `name` | Name of the root component written into the SBOM; defaults to the rule name if omitted. |
 | `component_version` | `None` | Version string for the root component; auto-detected from the module graph when omitted. |
+| `component_license` | `None` | SPDX license expression for the root component; SCORE components without explicit license metadata default to `Apache-2.0`. |
 | `module_lockfiles` | `[]` | One or more `MODULE.bazel.lock` files used to extract dependency versions and SHA-256 checksums; C++ projects need only the workspace lockfile (`:MODULE.bazel.lock`), Rust projects should also pass `@score_crates//:MODULE.bazel.lock` to cover crate versions and checksums. |
 | `python_lockfiles` | `[]` | One or more pip-compile lockfiles (`requirements.txt.lock`) used to add pinned PyPI packages, SHA-256 hashes, and license expressions from DASH. Packages that DASH cannot verify retain `NOASSERTION`; descriptions are not enriched yet and remain `Missing`. |
 | `auto_python_cache` | `True` | Generates Python package metadata from `python_lockfiles`; set to `False` to disable it. |
