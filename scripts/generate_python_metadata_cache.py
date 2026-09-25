@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -28,6 +29,7 @@ PACKAGE_RE = re.compile(
     r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\[.*\]==([^\s\\]+)|^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)"
 )
 HASH_RE = re.compile(r"--hash=sha256[=:]([0-9a-fA-F]{64})")
+DASH_TIMEOUT_SECONDS = 1800
 
 
 def _find_uvx() -> str:
@@ -98,18 +100,52 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
         summary_path,
         *lockfiles,
     ]
+    start_time = time.monotonic()
+    print(
+        f"INFO: Starting DASH Python license scan for {len(lockfiles)} lockfile(s)"
+    )
     try:
         result = subprocess.run(
             command,
             check=False,
             text=True,
             capture_output=True,
-            timeout=600,
+            timeout=DASH_TIMEOUT_SECONDS,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        print(f"WARNING: DASH Python license scan unavailable: {error}")
+    except subprocess.TimeoutExpired as error:
+        elapsed = time.monotonic() - start_time
+        print(
+            f"WARNING: DASH Python license scan timed out after {elapsed:.1f}s "
+            f"(limit={DASH_TIMEOUT_SECONDS}s): {error}"
+        )
         return False
+    except OSError as error:
+        elapsed = time.monotonic() - start_time
+        print(
+            f"WARNING: DASH Python license scan unavailable after {elapsed:.1f}s: "
+            f"{error}"
+        )
+        return False
+    elapsed = time.monotonic() - start_time
+    summary = Path(summary_path)
+    summary_bytes = summary.stat().st_size if summary.is_file() else 0
+    summary_rows = (
+        sum(
+            1
+            for line in summary.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if summary.is_file()
+        else 0
+    )
+    summary_usable = summary_bytes > 0
+    print(
+        f"INFO: DASH Python license scan finished in {elapsed:.1f}s "
+        f"(returncode={result.returncode}, summary_exists={summary.is_file()}, "
+        f"summary_bytes={summary_bytes}, summary_rows={summary_rows}, "
+        f"summary_usable={summary_usable})"
+    )
     if result.returncode < 0:
         print(f"WARNING: DASH Python license scan was terminated: {result.returncode}")
         return False
@@ -117,7 +153,9 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
         print(
             f"WARNING: DASH Python license scan reported errors: {result.stderr.strip()}"
         )
-    return Path(summary_path).is_file()
+    if not summary_usable:
+        print("WARNING: DASH Python license scan produced no usable summary")
+    return summary_usable
 
 
 def parse_dash_summary(summary_path: str) -> dict[str, str]:
