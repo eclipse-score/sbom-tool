@@ -60,7 +60,30 @@ from scripts.generate_crates_metadata_cache import (
     generate_synthetic_cargo_lock,
     parse_dash_summary,
     parse_module_bazel_lock,
+    run_dash_license_scan,
 )
+
+
+class TestRunDashLicenseScan(unittest.TestCase):
+    @mock.patch("scripts.generate_crates_metadata_cache.subprocess.run")
+    @mock.patch("os.path.exists", return_value=True)
+    def test_verbose_flag_is_not_passed_by_default(self, _mock_exists, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        run_dash_license_scan("Cargo.lock", "summary.txt")
+
+        self.assertNotIn("-v", mock_run.call_args.args[0])
+
+    @mock.patch("scripts.generate_crates_metadata_cache.subprocess.run")
+    @mock.patch("os.path.exists", return_value=True)
+    def test_verbose_flag_adds_v(self, _mock_exists, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        run_dash_license_scan("Cargo.lock", "summary.txt", verbose=True)
+
+        self.assertIn("-v", mock_run.call_args.args[0])
 
 
 class TestParseDashSummary(unittest.TestCase):

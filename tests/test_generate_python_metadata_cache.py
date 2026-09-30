@@ -26,6 +26,26 @@ from scripts.generate_python_metadata_cache import (
 
 class TestRunDashLicenseScan(unittest.TestCase):
     @patch("scripts.generate_python_metadata_cache.subprocess.run")
+    @patch("scripts.generate_python_metadata_cache.Path.is_file", return_value=True)
+    def test_verbose_flag_is_not_passed_by_default(self, _mock_is_file, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        run_dash_license_scan(["requirements.txt"], "summary.csv")
+
+        self.assertNotIn("-v", mock_run.call_args.args[0])
+
+    @patch("scripts.generate_python_metadata_cache.subprocess.run")
+    @patch("scripts.generate_python_metadata_cache.Path.is_file", return_value=True)
+    def test_verbose_flag_adds_v(self, _mock_is_file, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        run_dash_license_scan(["requirements.txt"], "summary.csv", verbose=True)
+
+        self.assertIn("-v", mock_run.call_args.args[0])
+
+    @patch("scripts.generate_python_metadata_cache.subprocess.run")
     def test_uses_separate_uv_cache_and_tool_directories(self, mock_run):
         mock_run.return_value.returncode = 0
         mock_run.return_value.stderr = ""

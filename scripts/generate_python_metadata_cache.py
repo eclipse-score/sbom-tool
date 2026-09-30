@@ -78,7 +78,9 @@ def parse_requirements_lockfile(path: str) -> dict[str, dict[str, str]]:
     return packages
 
 
-def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
+def run_dash_license_scan(
+    lockfiles: list[str], summary_path: str, verbose: bool = False
+) -> bool:
     """Run DASH license scanning for Python lockfiles.
 
     The dash-license-scan wrapper converts requirements files to DASH PURLs and
@@ -94,10 +96,10 @@ def run_dash_license_scan(lockfiles: list[str], summary_path: str) -> bool:
         "--from",
         "dash-license-scan@git+https://github.com/eclipse-score/dash-license-scan",
         "dash-license-scan",
-        "--summary",
-        summary_path,
-        *lockfiles,
     ]
+    if verbose:
+        command.append("-v")
+    command.extend(["--summary", summary_path, *lockfiles])
     try:
         result = subprocess.run(
             command,
@@ -139,12 +141,12 @@ def parse_dash_summary(summary_path: str) -> dict[str, str]:
 
 
 def enrich_python_licenses(
-    packages: dict[str, dict[str, str]], lockfiles: list[str]
+    packages: dict[str, dict[str, str]], lockfiles: list[str], verbose: bool = False
 ) -> None:
     """Enrich parsed Python packages with SPDX expressions returned by DASH."""
     with tempfile.TemporaryDirectory(prefix="python-dash-") as temp_dir:
         summary_path = str(Path(temp_dir) / "summary.csv")
-        if not run_dash_license_scan(lockfiles, summary_path):
+        if not run_dash_license_scan(lockfiles, summary_path, verbose=verbose):
             return
         for package_name, license_expression in parse_dash_summary(
             summary_path
@@ -158,6 +160,12 @@ def main() -> int:
     parser.add_argument("output")
     parser.add_argument("lockfiles", nargs="+")
     parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
+    parser.add_argument(
         "--skip-dash",
         action="store_true",
         help="Skip DASH license enrichment (for offline builds)",
@@ -168,7 +176,7 @@ def main() -> int:
     for lockfile in args.lockfiles:
         packages.update(parse_requirements_lockfile(lockfile))
     if not args.skip_dash:
-        enrich_python_licenses(packages, args.lockfiles)
+        enrich_python_licenses(packages, args.lockfiles, verbose=args.verbose)
     Path(args.output).write_text(json.dumps(packages, indent=2), encoding="utf-8")
     return 0
 

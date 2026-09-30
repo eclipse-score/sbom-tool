@@ -186,7 +186,9 @@ def _find_uvx() -> str:
     return "uvx"  # fall back, will raise FileNotFoundError in subprocess
 
 
-def run_dash_license_scan(cargo_lock_path: str, summary_output_path: str) -> None:
+def run_dash_license_scan(
+    cargo_lock_path: str, summary_output_path: str, verbose: bool = False
+) -> None:
     """Invoke dash-license-scan via uvx and write summary to file.
 
     Args:
@@ -202,10 +204,10 @@ def run_dash_license_scan(cargo_lock_path: str, summary_output_path: str) -> Non
         "--from",
         "dash-license-scan@git+https://github.com/eclipse-score/dash-license-scan",
         "dash-license-scan",
-        "--summary",
-        summary_output_path,
-        cargo_lock_path,
     ]
+    if verbose:
+        cmd.append("-v")
+    cmd.extend(["--summary", summary_output_path, cargo_lock_path])
     print(f"Running: {' '.join(cmd)}")
 
     # Redirect uv's cache and tool directories to writable temp locations.
@@ -420,6 +422,7 @@ def generate_cache(
     cargo_lock_path: str | None = None,
     module_lock_paths: list[str] | None = None,
     use_dash_license_scan: bool = False,
+    verbose: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Generate metadata cache from lockfiles and registry metadata.
 
@@ -471,7 +474,7 @@ def generate_cache(
 
         try:
             print("Fetching license data via dash-license-scan...")
-            run_dash_license_scan(synthetic_path, summary_path)
+            run_dash_license_scan(synthetic_path, summary_path, verbose=verbose)
             license_map = parse_dash_summary(summary_path)
             print(f"Retrieved licenses for {len(license_map)} crates")
         finally:
@@ -523,6 +526,12 @@ def main():
         action="store_true",
         help="Use dash-license-scan for Rust licenses (requires uvx and Java)",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output",
+    )
 
     args = parser.parse_args()
 
@@ -534,6 +543,7 @@ def main():
         cargo_lock_path=args.cargo_lock,
         module_lock_paths=args.module_lock,
         use_dash_license_scan=args.use_dash_license_scan,
+        verbose=args.verbose,
     )
 
     # Merge with existing cache if requested
