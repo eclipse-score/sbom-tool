@@ -126,6 +126,10 @@ def _sbom_impl(ctx):
     # Build inputs list
     generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles + ctx.files.java_files
 
+    # Verbose flag for the DASH-based metadata cache scripts (CLI-only):
+    # usage bazel build --define=score_sbom_verbose=true //:sbom
+    is_verbose = ctx.var.get("score_sbom_verbose", "false").lower() in ("true", "1", "yes")
+
     # Auto-generate crates metadata cache if enabled and a lockfile is provided
     crates_cache = None
     if (ctx.file.cargo_lockfile or ctx.files.module_lockfiles) and ctx.attr.auto_crates_cache:
@@ -133,6 +137,8 @@ def _sbom_impl(ctx):
         cache_inputs = []
         cache_args = ctx.actions.args()
         cache_args.add(crates_cache)
+        if is_verbose:
+            cache_args.add("--verbose")
         if ctx.file.cargo_lockfile:
             cache_inputs.append(ctx.file.cargo_lockfile)
             cache_args.add("--cargo-lock", ctx.file.cargo_lockfile)
@@ -205,11 +211,15 @@ def _sbom_impl(ctx):
     python_cache = None
     if ctx.files.python_lockfiles and ctx.attr.auto_python_cache:
         python_cache = ctx.actions.declare_file(ctx.attr.name + "_python_metadata.json")
+        python_cache_args = [python_cache.path]
+        if is_verbose:
+            python_cache_args.append("--verbose")
+        python_cache_args.extend([f.path for f in ctx.files.python_lockfiles])
         ctx.actions.run(
             inputs = ctx.files.python_lockfiles,
             outputs = [python_cache],
             executable = ctx.executable._python_cache,
-            arguments = [python_cache.path] + [f.path for f in ctx.files.python_lockfiles],
+            arguments = python_cache_args,
             mnemonic = "PythonMetadataGenerate",
             progress_message = "Generating Python metadata cache for %s" % ctx.attr.name,
             execution_requirements = {"requires-network": ""},
