@@ -54,7 +54,7 @@ parse_module_bazel_files()
 
 parse_module_lockfiles()
   - Extracts version from registryFileHashes MODULE.bazel URL keys.
-  - Extracts sha256 from source.json URL keys.
+  - Never substitutes registry source.json file hashes for archive checksums.
   - Modules with conflicting (ambiguous) versions are excluded.
   - Missing, malformed JSON, or empty files are silently skipped.
   - Multiple lockfiles are merged.
@@ -760,8 +760,8 @@ class TestParseModuleLockfiles(unittest.TestCase):
         self.assertEqual(result["boost"]["version"], "1.87.0")
         self.assertEqual(result["boost"]["purl"], "pkg:generic/boost@1.87.0")
 
-    def test_sha256_from_source_json(self):
-        """source.json hash is surfaced as sha256 for CycloneDX hashes."""
+    def test_source_json_hash_is_not_an_archive_checksum(self):
+        """Without verified source metadata, retain the version but omit SHA-256."""
         lockfile = {
             "registryFileHashes": {
                 "https://bcr.bazel.build/modules/nlohmann_json/3.11.3/MODULE.bazel": "sha256-abc",
@@ -771,7 +771,8 @@ class TestParseModuleLockfiles(unittest.TestCase):
         path = self._write(lockfile)
         result = parse_module_lockfiles([path])
         self.assertIn("nlohmann_json", result)
-        self.assertEqual(result["nlohmann_json"]["sha256"], "sha256-deadbeef")
+        self.assertNotIn("sha256", result["nlohmann_json"])
+        self.assertEqual(result["nlohmann_json"]["version"], "3.11.3")
 
     def test_ambiguous_version_skipped(self):
         """Modules with more than one observed version are excluded to avoid guessing."""
@@ -845,7 +846,7 @@ class TestParseModuleLockfiles(unittest.TestCase):
         self.assertIn("score_baselibs", result)
         sb = result["score_baselibs"]
         self.assertEqual(sb["version"], "0.2.13")
-        self.assertEqual(sb["sha256"], "sha256-selected")
+        self.assertNotIn("sha256", sb)
         self.assertEqual(sb["purl"], "pkg:github/eclipse-score/score_baselibs@0.2.13")
         self.assertEqual(sb["url"], "https://github.com/eclipse-score/score_baselibs")
 

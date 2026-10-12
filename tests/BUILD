@@ -41,6 +41,17 @@ score_py_pytest(
 )
 
 score_py_pytest(
+    name = "test_registry_checksums",
+    srcs = ["test_registry_checksums.py"],
+    data = ["fixtures/boost.config-1.83.0.bcr.4-source.json"],
+    deps = [
+        "//internal/generator:registry_metadata",
+        "//internal/generator:sbom_generator_lib",
+        "//scripts:generate_registry_metadata_cache",
+    ],
+)
+
+score_py_pytest(
     name = "test_sbom_generator",
     srcs = ["test_sbom_generator.py"],
     deps = ["//internal/generator:sbom_generator_lib"],

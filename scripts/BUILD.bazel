@@ -21,6 +21,19 @@ exports_files([
 ])
 
 py_library(
+    name = "generate_registry_metadata_cache",
+    srcs = ["generate_registry_metadata_cache.py"],
+    deps = ["//internal/generator:registry_metadata"],
+)
+
+py_binary(
+    name = "generate_registry_metadata_cache_bin",
+    srcs = ["generate_registry_metadata_cache.py"],
+    main = "generate_registry_metadata_cache.py",
+    deps = ["//internal/generator:registry_metadata"],
+)
+
+py_library(
     name = "generate_crates_metadata_cache",
     srcs = ["generate_crates_metadata_cache.py"],
 )

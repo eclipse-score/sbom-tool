@@ -116,7 +116,9 @@ the qualification scope requires the JDK installation as well.
 | `component_name` | rule `name` | Name of the root component written into the SBOM; defaults to the rule name if omitted. |
 | `component_version` | `None` | Version string for the root component; auto-detected from the module graph when omitted. |
 | `component_license` | `None` | SPDX license expression for the root component; SCORE components without explicit license metadata default to `Apache-2.0`. |
-| `module_lockfiles` | `[]` | One or more `MODULE.bazel.lock` files used to extract dependency versions and SHA-256 checksums; C++ projects need only the workspace lockfile (`:MODULE.bazel.lock`), Rust projects should also pass `@score_crates//:MODULE.bazel.lock` to cover crate versions and checksums. |
+| `module_lockfiles` | `[]` | `MODULE.bazel.lock` files used to find versions and check downloaded metadata. C++ projects need `:MODULE.bazel.lock`; Rust projects should also pass `@score_crates//:MODULE.bazel.lock`. |
+| `auto_registry_cache` | `True` | Downloads registry metadata for archive checksums. Set to `False` to disable downloads; checksums need a supplied `registry_cache` in that case. |
+| `registry_cache` | `None` | Previously downloaded registry metadata for offline builds. Checked against the lockfile before use. Replaces automatic downloads; do not edit it by hand. |
 | `python_lockfiles` | `[]` | One or more pip-compile lockfiles (`requirements.txt.lock`) used to add pinned PyPI packages, SHA-256 hashes, and license expressions from DASH. Packages that DASH cannot verify retain `NOASSERTION`; descriptions are not enriched yet and remain `Missing`. |
 | `auto_python_cache` | `True` | Generates Python package metadata from `python_lockfiles`; set to `False` to disable it. |
 | `java_files` | `[]` | Java or JAR files to inventory as file-level components. Each file gets its name, size, and SHA-256 checksum; this does not inventory the host Java runtime. |
@@ -172,6 +174,7 @@ Generated in `bazel-bin/`:
 - `my_sbom.spdx.json` — SPDX 2.3
 - `my_sbom.cdx.json` — CycloneDX 1.6
 - `my_sbom_crates_metadata.json` — Rust crate cache (if `auto_crates_cache = True`)
+- `my_sbom_registry_metadata.json` — Downloaded registry metadata
 - `my_sbom_cdxgen.cdx.json` — C++ scan output (if `auto_cdxgen = True`)
 
 ---
@@ -214,7 +217,7 @@ Generated in `bazel-bin/`:
 
 ### Automated Metadata Sources
 
-All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, `http_archive` rules, dash-license-scan (Python), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
+All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, registry metadata verified against that lockfile, `http_archive` rules, dash-license-scan (Python), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
 
 CPE, aliases, and pedigree are the only fields that may be set manually via `sbom_ext.license()`, as they represent identity and provenance annotations that cannot be auto-deduced.
 
@@ -226,7 +229,7 @@ Every component entry in the generated SBOM must include the following fields, a
 |---|---|---|---|---|
 | Component name | `name` | `components[].name` | Extracted | Human-readable name of the dependency (e.g. `serde`, `boost.mp11`). |
 | Component version | `versionInfo` | `components[].version` | Extracted | Exact released version string used in the build. |
-| Component hash (SHA-256) | `checksums[SHA256]` | `components[].hashes` | Extracted | SHA-256 digest of the downloaded archive, taken exclusively from `registryFileHashes` in `MODULE.bazel.lock` (BCR modules) or the `sha256` field of `http_archive` rules; omitted when neither provides one, rather than emitting an incorrect value. |
+| Component hash (SHA-256) | `checksums[SHA256]` | `components[].hashes` | Extracted | Hash of the package archive or file. Registry archive hashes come from `source.json.integrity`, after checking `source.json` against the lockfile. |
 | Software identifier (PURL) | `externalRefs[purl]` | `components[].purl` | Extracted | Package URL uniquely identifying the component by ecosystem, name, and version (e.g. `pkg:cargo/serde@1.0.228`). |
 | License expression | `licenseConcluded` | `components[].licenses` | Extracted | SPDX license expression concluded for this component (e.g. `Apache-2.0 OR MIT`). |
 | Dependency relationships | `relationships[DEPENDS_ON]` | `dependencies` | Extracted | Graph edges recording which component depends on which, enabling consumers to reason about transitive exposure. |
@@ -240,6 +243,25 @@ Every component entry in the generated SBOM must include the following fields, a
 Legend: **Extracted** — derived automatically from the Bazel dependency graph, lockfiles, or external registries (crates.io, cdxgen). **Configured** — comes from an `sbom()` rule parameter with a sensible default. **Auto-generated** — computed at build time with no user input required.
 
 Fields are populated automatically from the sources described in [Automated Metadata Sources](#automated-metadata-sources) and [License Data by Language](#license-data-by-language). If a source cannot provide a value (e.g. cdxgen cannot resolve a C++ component), the field is omitted rather than filled with incorrect data — except for description, which is set to `"Missing"` to make the gap visible.
+
+### Registry checksums
+
+The lockfile stores the hash of `source.json`. That file contains the archive's
+hash in `integrity`. The tool checks `source.json` and writes the archive hash
+and URL to the SBOM. Download errors or invalid metadata fail the build. If no SHA-256
+archive hash is available, it is omitted. This hash covers the downloaded
+archive, before any patches or build steps.
+
+For offline builds, download the metadata first:
+
+```bash
+bazel run @score_sbom//scripts:generate_registry_metadata_cache_bin -- \
+  "$PWD/registry_metadata.json" --module-lock "$PWD/MODULE.bazel.lock"
+```
+
+Set `registry_cache = ":registry_metadata.json"` in `sbom()` to use that file.
+Repeat `--module-lock` for each lockfile used by the rule. The Python generator
+accepts the same file through `--registry-cache`.
 
 ### Component Scope
 
@@ -271,6 +293,9 @@ bazel test //tests/...
 
 # From sbom-tool/examples/dummy_project/ — end-to-end, against a real build
 bazel test //...
+
+# From examples/dummy_project/ — registry checksum test (needs network)
+bazel test //:registry_smoke_test
 ```
 
 Sbom was also tested by external tool
@@ -307,6 +332,7 @@ enrichment.
 | `test_cyclonedx_formatter.py` | `test_cyclonedx_formatter` | CycloneDX 1.6 document structure; license encoding (single id vs compound expression); `or`/`and` normalisation; dependency graph; `_normalize_spdx_license()` |
 | `test_spdx_formatter.py` | `test_spdx_formatter` | SPDX 2.3 document structure; PURL as externalRef; SHA-256 checksums; DESCRIBES/DEPENDS_ON relationships; `hasExtractedLicensingInfos` for `LicenseRef-*`; `_normalize_spdx_license()` |
 | `test_sbom_generator.py` | `test_sbom_generator` | `filter_repos()`; `resolve_component()` (all 8 repo-type branches); `deduplicate_components()`; `parse_module_bazel_files()`; `parse_module_lockfiles()`; `mark_missing_cpp_descriptions()`; `main()` end-to-end (15 scenarios: SPDX/CycloneDX output, BCR licenses, crate_universe, exclude patterns, version auto-detect, dep_module_files, module_lockfiles, --crates-cache, --cdxgen-sbom, output file selection) |
+| `test_registry_checksums.py` | `test_registry_checksums` | Correct archive hashes in both formats, invalid metadata, download failures, and version mismatches. Runs offline. |
 | `test_generate_crates_metadata_cache.py` | `test_generate_crates_metadata_cache` | `parse_dash_summary()`; `parse_module_bazel_lock()`; `generate_synthetic_cargo_lock()`; end-to-end summary CSV round-trip |
 | `test_generate_cpp_metadata_cache.py` | `test_generate_cpp_metadata_cache` | `convert_cdxgen_to_cache()`: version, license (id/name/expression/AND), supplier (name/publisher fallback), PURL, URL from externalReferences, description |
 | `test_spdx_to_github_snapshot.py` | `test_spdx_to_github_snapshot` | `convert_spdx_to_snapshot()`: top-level fields; direct vs. indirect classification; package filtering; manifest naming; `pkg:generic/` PURL support |

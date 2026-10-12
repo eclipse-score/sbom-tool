@@ -26,6 +26,7 @@ py_binary(
     main = "sbom_generator.py",
     deps = [
         ":cyclonedx_formatter",
+        ":registry_metadata",
         ":spdx_formatter",
     ],
 )
@@ -35,8 +36,14 @@ py_library(
     srcs = ["sbom_generator.py"],
     deps = [
         ":cyclonedx_formatter",
+        ":registry_metadata",
         ":spdx_formatter",
     ],
+)
+
+py_library(
+    name = "registry_metadata",
+    srcs = ["registry_metadata.py"],
 )
 
 py_library(

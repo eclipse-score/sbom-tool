@@ -57,6 +57,8 @@ def sbom(
         namespace = None,
         exclude_patterns = None,
         cdxgen_version = "12.1.4",
+        registry_cache = None,
+        auto_registry_cache = True,
         **kwargs):
     """Generates SBOM for specified targets.
 
@@ -90,6 +92,8 @@ def sbom(
         java_files: Java/JAR files to inventory as file-level components.
         auto_python_cache: Run Python metadata collection when python_lockfiles are provided
         auto_crates_cache: Run crates metadata cache generation when cargo_lockfile or module_lockfiles is provided
+        registry_cache: Previously downloaded registry metadata for offline builds
+        auto_registry_cache: Download registry metadata to read archive checksums
         output_formats: List of formats to generate ("spdx", "cyclonedx")
         producer_name: SBOM producer organization name
         producer_url: URL of the SBOM producer organisation. When this is a
@@ -161,6 +165,8 @@ def sbom(
         testonly = testonly,
         auto_python_cache = auto_python_cache,
         auto_crates_cache = auto_crates_cache,
+        registry_cache = registry_cache,
+        auto_registry_cache = auto_registry_cache,
         output_formats = output_formats,
         producer_name = producer_name,
         producer_url = producer_url,

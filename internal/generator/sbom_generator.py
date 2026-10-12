@@ -30,6 +30,7 @@ from typing import Any
 
 from internal.generator.spdx_formatter import generate_spdx
 from internal.generator.cyclonedx_formatter import generate_cyclonedx
+from internal.generator.registry_metadata import archive_metadata
 
 
 def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]:
@@ -86,19 +87,18 @@ def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]
     return modules
 
 
-def parse_module_lockfiles(file_paths: list[str]) -> dict[str, dict[str, str]]:
+def parse_module_lockfiles(
+    file_paths: list[str], registry_sources: dict[str, str] | None = None
+) -> dict[str, dict[str, str]]:
     """Parse MODULE.bazel.lock files to infer module versions and checksums.
 
-    Uses registry URL keys from lockfiles. Extracts resolved module versions
-    and SHA-256 checksums from ``source.json`` entries (or falls back to unique
-    ``MODULE.bazel`` candidate entries when source.json is not present).
-
-    For modules coming from Bazel registries, this extracts the resolved version
-    and the SHA-256 checksum from the corresponding ``source.json`` entry so
-    that CycloneDX hashes and version info are accurately populated.
+    Read versions from registry URLs. Check cached source.json files against
+    the lockfile before reading their archive hashes. Without a cache,
+    keep the version and leave out the checksum. Supplied caches must contain
+    all selected source entries.
     """
-    # Track source.json entries (authoritative resolved versions): module_name -> {version: sha256}
-    module_source_versions: dict[str, dict[str, str]] = {}
+    # Keep all entries so we can detect conflicting values.
+    module_source_versions: dict[str, dict[str, set[tuple[str, str]]]] = {}
     # Track candidate MODULE.bazel entries (evaluated versions during resolution)
     module_candidate_versions: dict[str, set[str]] = {}
 
@@ -116,17 +116,19 @@ def parse_module_lockfiles(file_paths: list[str]) -> dict[str, dict[str, str]]:
         for url, sha in registry_hashes.items():
             if not isinstance(url, str) or not isinstance(sha, str):
                 continue
+            if sha == "not found":
+                continue
 
-            # source.json entry – carries the sha256 of the downloaded source
-            # tarball for this module@version. This indicates the version was
-            # selected and downloaded by Bazel.
+            # This hash belongs to source.json. The archive hash is inside it.
             source_match = re.search(
                 r"/modules/([^/]+)/([^/]+)/source\.json$",
                 url,
             )
             if source_match:
                 src_module, src_version = source_match.groups()
-                module_source_versions.setdefault(src_module, {})[src_version] = sha
+                module_source_versions.setdefault(src_module, {}).setdefault(
+                    src_version, set()
+                ).add((url, sha))
                 continue
 
             # MODULE.bazel entry – candidate version evaluated during resolution.
@@ -145,13 +147,30 @@ def parse_module_lockfiles(file_paths: list[str]) -> dict[str, dict[str, str]]:
 
     for name in sorted(all_module_names):
         version = None
-        sha = None
+        archive = {}
+        candidate_seen = False
 
         if name in module_source_versions:
             src_versions = module_source_versions[name]
             # If exactly one resolved version has a source.json, that's the selected version
             if len(src_versions) == 1:
-                version, sha = next(iter(src_versions.items()))
+                version, sources = next(iter(src_versions.items()))
+                for source_url, metadata_sha in sorted(sources):
+                    if registry_sources is None:
+                        continue
+                    if source_url not in registry_sources:
+                        raise ValueError(
+                            f"Registry cache missing selected source metadata: {source_url}"
+                        )
+                    candidate = archive_metadata(
+                        registry_sources[source_url], metadata_sha
+                    )
+                    if candidate_seen and archive != candidate:
+                        raise ValueError(
+                            f"Conflicting archive metadata for {name}@{version}"
+                        )
+                    archive = candidate
+                    candidate_seen = True
             else:
                 # Ambiguous source.json versions across lockfiles
                 continue
@@ -177,12 +196,9 @@ def parse_module_lockfiles(file_paths: list[str]) -> dict[str, dict[str, str]]:
             "version": version,
             "purl": purl,
         }
-        if sha:
-            # Expose as sha256 so downstream code can turn it into a CycloneDX
-            # SHA-256 hash entry.
-            entry["sha256"] = sha
+        entry.update(archive)
 
-        if name.startswith("score_"):
+        if name.startswith("score_") and not entry.get("url"):
             entry["url"] = f"https://github.com/eclipse-score/{name}"
 
         modules[name] = entry
@@ -509,6 +525,9 @@ def main() -> int:
     parser.add_argument("--crates-cache", help="Path to crates_metadata.json override")
     parser.add_argument("--python-cache", help="Path to Python package metadata cache")
     parser.add_argument(
+        "--registry-cache", help="Cache of original registry source.json text"
+    )
+    parser.add_argument(
         "--cdxgen-sbom",
         help="Path to cdxgen-generated CycloneDX JSON for C++ enrichment",
     )
@@ -548,8 +567,16 @@ def main() -> int:
     # This helps for modules that don't participate in the sbom_metadata
     # extension (for example, transitive Bazel modules like boost.*).
     module_lockfiles = data.get("module_lockfiles", [])
+    registry_sources = None
+    if args.registry_cache:
+        with open(args.registry_cache, encoding="utf-8") as f:
+            registry_sources = json.load(f)
+        if not isinstance(registry_sources, dict):
+            raise ValueError(
+                "Registry cache must be a JSON object mapping URLs to source.json text"
+            )
     if module_lockfiles:
-        lock_modules = parse_module_lockfiles(module_lockfiles)
+        lock_modules = parse_module_lockfiles(module_lockfiles, registry_sources)
         if "modules" not in metadata:
             metadata["modules"] = {}
         for name, mod_data in lock_modules.items():
@@ -565,13 +592,22 @@ def main() -> int:
                     "purl"
                 ):
                     existing["purl"] = mod_data["purl"]
-                if not existing.get("sha256") and mod_data.get("sha256"):
+                if (
+                    not existing.get("sha256")
+                    and mod_data.get("sha256")
+                    and existing.get("version") == mod_data.get("version")
+                ):
                     existing["sha256"] = mod_data["sha256"]
+                    existing["url"] = mod_data["url"]
                 if not existing.get("license") and mod_data.get("license"):
                     existing["license"] = mod_data["license"]
                 if not existing.get("supplier") and mod_data.get("supplier"):
                     existing["supplier"] = mod_data["supplier"]
-                if not existing.get("url") and mod_data.get("url"):
+                if (
+                    not existing.get("url")
+                    and mod_data.get("url")
+                    and existing.get("version") == mod_data.get("version")
+                ):
                     existing["url"] = mod_data["url"]
 
     # Load crates metadata cache (licenses + checksums + versions)
@@ -843,8 +879,7 @@ def resolve_component(
             "pedigree_variants": mod.get("pedigree_variants", []),
             "pedigree_notes": mod.get("pedigree_notes", ""),
         }
-        # MODULE.bazel.lock can provide a sha256 via source.json; expose it as
-        # checksum so CycloneDX hashes are populated for C/C++ modules.
+        # Pass the archive hash to both formatters.
         if mod.get("sha256"):
             result["checksum"] = mod["sha256"]
         elif mod.get("checksum"):

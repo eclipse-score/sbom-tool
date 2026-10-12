@@ -126,6 +126,29 @@ def _sbom_impl(ctx):
     # Build inputs list
     generator_inputs = [deps_json, metadata_file] + ctx.files.dep_module_files + ctx.files.module_lockfiles + ctx.files.java_files
 
+    # Download registry metadata separately. The generator checks it against
+    # the lockfile before reading the archive hashes.
+    registry_cache = ctx.file.registry_cache
+    if not registry_cache and ctx.files.module_lockfiles and ctx.attr.auto_registry_cache:
+        registry_cache = ctx.actions.declare_file(ctx.attr.name + "_registry_metadata.json")
+        registry_args = ctx.actions.args()
+        registry_args.add(registry_cache)
+        for lock in ctx.files.module_lockfiles:
+            registry_args.add("--module-lock", lock)
+        ctx.actions.run(
+            inputs = ctx.files.module_lockfiles,
+            outputs = [registry_cache],
+            executable = ctx.executable._registry_cache_script,
+            arguments = [registry_args],
+            mnemonic = "RegistryMetadataGenerate",
+            progress_message = "Verifying registry archive metadata for %s" % ctx.attr.name,
+            execution_requirements = {"requires-network": ""},
+            use_default_shell_env = True,
+        )
+    if registry_cache:
+        args.add("--registry-cache", registry_cache)
+        generator_inputs.append(registry_cache)
+
     # Verbose flag for the DASH-based metadata cache scripts (CLI-only):
     # usage bazel build --define=score_sbom_verbose=true //:sbom
     is_verbose = ctx.var.get("score_sbom_verbose", "false").lower() in ("true", "1", "yes")
@@ -322,6 +345,14 @@ sbom_rule = rule(
             allow_files = True,
             doc = "MODULE.bazel.lock files for crate metadata extraction (e.g., from score_crates and workspace)",
         ),
+        "registry_cache": attr.label(
+            allow_single_file = [".json"],
+            doc = "Downloaded source.json files, stored as URL-to-text JSON entries",
+        ),
+        "auto_registry_cache": attr.bool(
+            default = True,
+            doc = "Download registry metadata to read archive checksums",
+        ),
         "python_lockfiles": attr.label_list(
             allow_files = True,
             default = [],
@@ -354,6 +385,11 @@ sbom_rule = rule(
         ),
         "_crates_cache_script": attr.label(
             default = "//scripts:generate_crates_metadata_cache_bin",
+            executable = True,
+            cfg = "exec",
+        ),
+        "_registry_cache_script": attr.label(
+            default = "//scripts:generate_registry_metadata_cache_bin",
             executable = True,
             cfg = "exec",
         ),
