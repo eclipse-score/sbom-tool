@@ -161,6 +161,30 @@ class TestCycloneDXFormatter(unittest.TestCase):
         root_dep = next(d for d in dependencies if d["ref"] == "test-component@1.0.0")
         self.assertEqual(len(root_dep["dependsOn"]), 2)
 
+    def test_dependency_names_require_one_version_without_repository_mapping(self):
+        for versions in (("1.3.0",), ("1.3.0", "2.0.1")):
+            with self.subTest(versions=versions):
+                components = [{"name": "bindgen", "version": "0.72.1"}] + [
+                    {"name": "shlex", "version": version} for version in versions
+                ]
+                cdx = generate_cyclonedx(
+                    components,
+                    self.config,
+                    self.timestamp,
+                    external_dep_edges=[
+                        "bindgen+::shlex+",
+                        "bindgen::missing",
+                        "bindgen::bindgen",
+                    ],
+                )
+                dependency = next(
+                    d for d in cdx["dependencies"] if d["ref"] == "bindgen@0.72.1"
+                )
+                self.assertEqual(
+                    dependency["dependsOn"],
+                    ["shlex@1.3.0"] if len(versions) == 1 else [],
+                )
+
     def test_generate_cyclonedx_external_references(self):
         """Test that external references are added for crates.io sources."""
         cdx = generate_cyclonedx(self.components, self.config, self.timestamp)

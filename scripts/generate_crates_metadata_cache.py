@@ -50,7 +50,7 @@ def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         lockfile_path: Path to Cargo.lock file
 
     Returns:
-        Dict mapping crate name to {version, checksum, source}
+        Dict mapping name@version to {version, checksum, source}
     """
     try:
         import tomllib as tomli  # Python 3.11+
@@ -74,7 +74,7 @@ def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
 
         # Only include crates from crates.io
         if "registry+https://github.com/rust-lang/crates.io-index" in source:
-            crates[name] = {
+            crates[f"{name}@{package['version']}"] = {
                 "name": name,
                 "version": package["version"],
                 "checksum": package.get("checksum", ""),
@@ -95,7 +95,7 @@ def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         lockfile_path: Path to MODULE.bazel.lock file
 
     Returns:
-        Dict mapping crate name to {version, checksum, source}
+        Dict mapping name@version to {version, checksum, source}
     """
     with open(lockfile_path, encoding="utf-8") as f:
         lock_data = json.load(f)
@@ -137,7 +137,7 @@ def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         attrs = spec.get("attributes", {})
         sha256 = attrs.get("sha256", "")
 
-        crates[name] = {
+        crates[f"{name}@{version}"] = {
             "name": name,
             "version": version,
             "checksum": sha256,
@@ -156,7 +156,7 @@ def generate_synthetic_cargo_lock(
     name, version, and source fields. Source must contain 'crates' if present.
 
     Args:
-        crates: Dict mapping crate name to {name, version, checksum, source}
+        crates: Dict mapping name@version to {name, version, checksum, source}
         output_path: Path to write the synthetic Cargo.lock
     """
     lines = ["version = 4", ""]
@@ -274,7 +274,7 @@ def parse_dash_summary(summary_path: str) -> dict[str, str]:
         summary_path: Path to the dash-licenses summary file
 
     Returns:
-        Dict mapping crate name to SPDX license expression string
+        Dict mapping name@version to SPDX license expression string
     """
     licenses: dict[str, str] = {}
     with open(summary_path, encoding="utf-8") as f:
@@ -294,7 +294,7 @@ def parse_dash_summary(summary_path: str) -> dict[str, str]:
             if len(id_parts) >= 5 and id_parts[0] == "crate":
                 crate_name = id_parts[3]
                 if license_expr:
-                    licenses[crate_name] = license_expr
+                    licenses[f"{crate_name}@{id_parts[4]}"] = license_expr
 
     return licenses
 
@@ -380,15 +380,15 @@ def _fetch_one_crate_meta(name: str, version: str) -> tuple[str, dict[str, str]]
 
 
 def fetch_crate_metadata_from_cratesio(
-    crate_versions: dict[str, str],
+    crate_versions: list[tuple[str, str]],
 ) -> dict[str, dict[str, str]]:
     """Fetch metadata (description, supplier, license) from crates.io API (parallel).
 
     Args:
-        crate_versions: Dict mapping crate name to its locked version
+        crate_versions: List of (crate name, locked version) pairs
 
     Returns:
-        Dict mapping crate name to {description, supplier, license}
+        Dict mapping name@version to {description, supplier, license}
     """
     total = len(crate_versions)
     print(f"Fetching metadata from crates.io for {total} crates...")
@@ -397,13 +397,13 @@ def fetch_crate_metadata_from_cratesio(
     done = 0
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {
-            pool.submit(_fetch_one_crate_meta, name, version): name
-            for name, version in crate_versions.items()
+            pool.submit(_fetch_one_crate_meta, name, version): f"{name}@{version}"
+            for name, version in crate_versions
         }
         for future in as_completed(futures):
-            name, meta = future.result()
+            _name, meta = future.result()
             if meta:
-                metadata[name] = meta
+                metadata[futures[future]] = meta
             done += 1
             if done % 50 == 0:
                 print(f"  ... {done}/{total} crates queried")
@@ -436,7 +436,7 @@ def generate_cache(
         module_lock_paths: Optional list of paths to MODULE.bazel.lock files
 
     Returns:
-        Dict mapping crate name to metadata
+        Dict mapping name@version to metadata
     """
     crates: dict[str, dict[str, Any]] = {}
 
@@ -482,18 +482,18 @@ def generate_cache(
 
     # Fetch descriptions + suppliers from crates.io (parallel, ~10 concurrent requests)
     cratesio_meta = fetch_crate_metadata_from_cratesio(
-        {name: info["version"] for name, info in crates.items()}
+        [(info["name"], info["version"]) for info in crates.values()]
     )
 
     # Build final cache
     cache: dict[str, dict[str, Any]] = {}
-    for name, info in crates.items():
-        meta = cratesio_meta.get(name, {})
-        cache[name] = {
+    for key, info in crates.items():
+        meta = cratesio_meta.get(key, {})
+        cache[key] = {
             "version": info["version"],
             "checksum": info["checksum"],
-            "purl": f"pkg:cargo/{name}@{info['version']}",
-            "license": license_map.get(name, meta.get("license", "")),
+            "purl": f"pkg:cargo/{info['name']}@{info['version']}",
+            "license": license_map.get(key, meta.get("license", "")),
             "description": meta.get("description", ""),
             "supplier": meta.get("supplier", ""),
         }

@@ -31,6 +31,7 @@ def generate_cyclonedx(
     config: dict[str, Any],
     timestamp: str,
     external_dep_edges: list[str] | None = None,
+    repository_components: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate CycloneDX 1.6 JSON document.
 
@@ -38,6 +39,8 @@ def generate_cyclonedx(
         components: List of component dictionaries
         config: Configuration dictionary with producer info
         timestamp: ISO 8601 timestamp
+        external_dep_edges: Bazel repository edges in "source::destination" format
+        repository_components: Resolved components keyed by repository name
 
     Returns:
         CycloneDX 1.6 compliant dictionary
@@ -123,10 +126,37 @@ def generate_cyclonedx(
 
     # Add components
     dependency_refs = []
+    component_refs = {}
     for comp in components:
         cdx_component = _create_cdx_component(comp)
         cdx_doc["components"].append(cdx_component)
         dependency_refs.append(cdx_component["bom-ref"])
+        component_refs[
+            (comp.get("name", "unknown"), comp.get("version", "unknown"))
+        ] = cdx_component["bom-ref"]
+
+    if repository_components is not None:
+        repository_refs = {
+            repo.rstrip("+"): (
+                root_bom_ref
+                if comp.get("name") == component_name
+                else component_refs.get(
+                    (comp.get("name", "unknown"), comp.get("version", "unknown"))
+                )
+            )
+            for repo, comp in repository_components.items()
+        }
+    else:
+        # Direct formatter callers can use names only when the version is unambiguous.
+        refs_by_name: dict[str, set[str]] = {}
+        for (name, _version), ref in component_refs.items():
+            refs_by_name.setdefault(name.rstrip("+"), set()).add(ref)
+        repository_refs = {
+            name: next(iter(refs))
+            for name, refs in refs_by_name.items()
+            if len(refs) == 1
+        }
+        repository_refs[component_name.rstrip("+")] = root_bom_ref
 
     # Build dependency graph
     depends_map: dict[str, set[str]] = {}
@@ -139,8 +169,10 @@ def generate_cyclonedx(
                 continue
             src = src.rstrip("+")
             dst = dst.rstrip("+")
-            src_ref = _generate_bom_ref(src, _component_version_lookup(components, src))
-            dst_ref = _generate_bom_ref(dst, _component_version_lookup(components, dst))
+            src_ref = repository_refs.get(src)
+            dst_ref = repository_refs.get(dst)
+            if not src_ref or not dst_ref or src_ref == dst_ref:
+                continue
             depends_map.setdefault(src_ref, set()).add(dst_ref)
 
     # Add root dependency (main component depends on all components)
@@ -152,10 +184,7 @@ def generate_cyclonedx(
     )
 
     # Add each component's dependency entry
-    for comp in components:
-        name = comp.get("name", "")
-        version = comp.get("version", "")
-        bom_ref = _generate_bom_ref(name, version)
+    for bom_ref in dependency_refs:
         cdx_doc["dependencies"].append(
             {
                 "ref": bom_ref,
@@ -373,10 +402,3 @@ def _pedigree_ref(value: str) -> dict[str, Any]:
     if value.startswith("pkg:"):
         return {"purl": value}
     return {"name": value}
-
-
-def _component_version_lookup(components: list[dict[str, Any]], name: str) -> str:
-    for comp in components:
-        if comp.get("name") == name:
-            return comp.get("version", "")
-    return ""

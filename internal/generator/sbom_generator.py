@@ -611,12 +611,16 @@ def main() -> int:
     # Build component list with metadata
     components.extend([])
 
+    repository_components = {}
     for repo in filtered_repos:
+        if repo.rstrip("+") in repository_components:
+            continue
         component = resolve_component(repo, metadata)
         if component:
             components.append(component)
+            repository_components[repo.rstrip("+")] = component
 
-    # Deduplicate components by name
+    # Deduplicate components by name and version
     components = deduplicate_components(components)
 
     # Ensure components exist for all dependency edge destinations.
@@ -634,17 +638,13 @@ def main() -> int:
             if dst:
                 edge_dst_repos.add(dst)
 
-    # Normalise names by stripping the bzlmod '+' suffix before comparing so
-    # that e.g. 'nlohmann_json+' (from external_repos) and 'nlohmann_json'
-    # (from an edge destination) are not treated as distinct components — both
-    # would otherwise produce the same sanitised bom-ref, creating duplicates.
-    existing_names = {c.get("name", "").rstrip("+") for c in components}
+    # Keep repository names so dependency edges can use the final package IDs.
     for dst in filter_repos(sorted(edge_dst_repos), exclude_patterns):
-        if dst.rstrip("+") not in existing_names:
+        if dst not in repository_components:
             component = resolve_component(dst, metadata)
             if component:
                 components.append(component)
-                existing_names.add(component.get("name", "").rstrip("+"))
+                repository_components[dst] = component
 
     components = deduplicate_components(components)
 
@@ -687,6 +687,7 @@ def main() -> int:
             config,
             timestamp,
             external_dep_edges=data.get("external_dep_edges", []),
+            repository_components=repository_components,
         )
         Path(args.cyclonedx_output).write_text(
             json.dumps(cdx, indent=2), encoding="utf-8"
@@ -723,6 +724,42 @@ def filter_repos(repos: list[str], exclude_patterns: list[str]) -> list[str]:
         if not should_exclude:
             filtered.append(repo)
     return filtered
+
+
+def _get_crate_metadata(
+    crates: dict[str, Any], name: str, version: str | None = None
+) -> dict[str, Any]:
+    """Match crate metadata by name and version, including older cache files."""
+    names = (name, name.replace("-", "_"))
+    if version is not None:
+        for key in [f"{n}@{version}" for n in names] + list(names):
+            entry = crates.get(key, {})
+            cached_version = entry.get("version", version if "@" in key else None)
+            if entry and cached_version == version:
+                return entry
+        return {}
+
+    # Prefer versioned entries; legacy entries must not create false ambiguity.
+    versioned = {
+        key: entry
+        for key, entry in crates.items()
+        if "@" in key and key.split("@", 1)[0] in names
+    }
+    if versioned:
+        versions = {key.split("@", 1)[1] for key in versioned}
+        if len(versions) != 1:
+            return {}
+        version = next(iter(versions))
+        entry = _get_crate_metadata(versioned, name, version)
+        return {**entry, "version": version} if entry else {}
+
+    # Fall back to legacy entries only when no versioned entries exist.
+    matches = {
+        entry.get("version", "unknown"): entry
+        for key, entry in crates.items()
+        if key in names
+    }
+    return next(iter(matches.values())) if len(matches) == 1 else {}
 
 
 def _build_crate_result(
@@ -877,13 +914,8 @@ def resolve_component(
     # Check if it's a crate from the metadata cache
     # Cargo.lock uses underscores, Bazel uses hyphens — try both
     crates = metadata.get("crates", {})
-    crate_key = (
-        normalized_name
-        if normalized_name in crates
-        else normalized_name.replace("-", "_")
-    )
-    if crate_key in crates:
-        crate = crates[crate_key]
+    crate = _get_crate_metadata(crates, normalized_name)
+    if crate:
         result = {
             "name": normalized_name,
             "version": crate.get("version", "unknown"),
@@ -951,9 +983,7 @@ def resolve_component(
 
                 # Look up crate metadata from cache
                 # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = cached_crates.get(crate_name) or cached_crates.get(
-                    crate_name.replace("-", "_"), {}
-                )
+                crate_meta = _get_crate_metadata(cached_crates, crate_name, version)
                 return _build_crate_result(crate_name, version, crate_meta)
 
     # Handle legacy crate universe format (e.g., crates_io__tokio-1.10.0)
@@ -969,9 +999,7 @@ def resolve_component(
 
                 # Look up crate metadata from cache
                 # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = cached_crates.get(crate_name) or cached_crates.get(
-                    crate_name.replace("-", "_"), {}
-                )
+                crate_meta = _get_crate_metadata(cached_crates, crate_name, version)
                 return _build_crate_result(crate_name, version, crate_meta)
 
     # Check if repo is a sub-library of a known parent (e.g., boost.config+ -> boost)
@@ -1017,7 +1045,7 @@ def resolve_component(
 
 
 def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove duplicate components, keeping the one with most metadata.
+    """Merge missing metadata from duplicate name/version pairs.
 
     Args:
         components: List of component dictionaries
@@ -1025,22 +1053,15 @@ def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, A
     Returns:
         Deduplicated list of components
     """
-    seen: dict[str, dict[str, Any]] = {}
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
     for comp in components:
-        name = comp.get("name", "")
-        if name not in seen:
-            seen[name] = comp
+        key = (comp.get("name", ""), comp.get("version", "unknown"))
+        if key not in seen:
+            seen[key] = comp
         else:
-            # Keep the one with more information (non-unknown version preferred)
-            existing = seen[name]
-            if (
-                existing.get("version") == "unknown"
-                and comp.get("version") != "unknown"
-            ):
-                seen[name] = comp
-            elif comp.get("license") and not existing.get("license"):
-                # Prefer component with license info
-                seen[name] = comp
+            for field, value in comp.items():
+                if value and not seen[key].get(field):
+                    seen[key][field] = value
 
     return list(seen.values())
 

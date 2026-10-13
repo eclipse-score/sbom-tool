@@ -245,6 +245,9 @@ Fields are populated automatically from the sources described in [Automated Meta
 
 Only transitive dependencies of the declared build targets are included. Build-time tools (compilers, build systems, test frameworks) are excluded via `exclude_patterns`.
 
+Different versions of a component are kept as separate SBOM entries. Rust caches
+use `name@version` keys so each version keeps its own checksum and license.
+
 ### License Data by Language
 
 - **Rust**: Licenses, descriptions, and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup. Optional `dash-license-scan` integration is still available in the cache generator for environments that require it.

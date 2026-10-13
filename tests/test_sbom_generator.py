@@ -389,6 +389,7 @@ class TestResolveComponentCrateUniverse(unittest.TestCase):
         """rules_rust++crate+crate_index__serde-1.0.228 → serde 1.0.228."""
         meta = self._meta(
             serde={
+                "version": "1.0.228",
                 "license": "Apache-2.0 OR MIT",
                 "description": "A serialization framework",
                 "supplier": "David Tolnay",
@@ -400,6 +401,62 @@ class TestResolveComponentCrateUniverse(unittest.TestCase):
         self.assertEqual(comp["version"], "1.0.228")
         self.assertEqual(comp["purl"], "pkg:cargo/serde@1.0.228")
         self.assertEqual(comp["license"], "Apache-2.0 OR MIT")
+
+    def test_legacy_cache_requires_matching_version(self):
+        for repo in (
+            "rules_rust++crate+crate_index__shlex-1.3.0",
+            "crates_io__shlex-1.3.0",
+        ):
+            for cached_version in ("2.0.1", None, "1.3.0"):
+                with self.subTest(repo=repo, cached_version=cached_version):
+                    entry = {"checksum": "a" * 64, "license": "MIT"}
+                    if cached_version:
+                        entry["version"] = cached_version
+                    comp = resolve_component(repo, self._meta(shlex=entry))
+                    self.assertEqual(comp["version"], "1.3.0")
+                    self.assertEqual("checksum" in comp, cached_version == "1.3.0")
+                    self.assertEqual("license" in comp, cached_version == "1.3.0")
+
+    def test_bare_name_requires_one_cached_version(self):
+        crates = {"shlex@1.3.0": {"version": "1.3.0", "checksum": "a" * 64}}
+        self.assertEqual(
+            resolve_component("shlex", self._meta(**crates))["version"], "1.3.0"
+        )
+        crates["shlex@2.0.1"] = {"version": "2.0.1", "checksum": "b" * 64}
+        comp = resolve_component("shlex", self._meta(**crates))
+        self.assertEqual(comp["version"], "unknown")
+        self.assertNotIn("checksum", comp)
+
+    def test_bare_name_prefers_versioned_cache_in_either_order(self):
+        for legacy_version in (None, "1.3.0", "2.0.1"):
+            legacy = {"checksum": "b" * 64, "license": "Apache-2.0"}
+            if legacy_version:
+                legacy["version"] = legacy_version
+            entries = [
+                (
+                    "shlex@1.3.0",
+                    {"version": "1.3.0", "checksum": "a" * 64, "license": "MIT"},
+                ),
+                ("shlex", legacy),
+            ]
+            for order in (entries, list(reversed(entries))):
+                with self.subTest(
+                    legacy_version=legacy_version, keys=[key for key, _ in order]
+                ):
+                    comp = resolve_component("shlex", self._meta(**dict(order)))
+                    self.assertEqual(comp["version"], "1.3.0")
+                    self.assertEqual(comp["checksum"], "a" * 64)
+                    self.assertEqual(comp["license"], "MIT")
+
+    def test_bare_name_does_not_use_legacy_to_resolve_ambiguous_versions(self):
+        crates = {
+            "shlex": {"version": "1.3.0", "checksum": "c" * 64},
+            "shlex@1.3.0": {"version": "1.3.0", "checksum": "a" * 64},
+            "shlex@2.0.1": {"version": "2.0.1", "checksum": "b" * 64},
+        }
+        comp = resolve_component("shlex", self._meta(**crates))
+        self.assertEqual(comp["version"], "unknown")
+        self.assertNotIn("checksum", comp)
 
     def test_bzlmod_format_complex_name_with_platform_suffix(self):
         """iceoryx2-bb-lock-free-qnx8-0.7.0 → name=iceoryx2-bb-lock-free-qnx8, version=0.7.0."""
@@ -433,6 +490,7 @@ class TestResolveComponentCrateUniverse(unittest.TestCase):
         """Legacy crate repos pick up metadata from cache when available."""
         meta = self._meta(
             tokio={
+                "version": "1.10.0",
                 "license": "MIT",
                 "description": "Async runtime",
                 "supplier": "Tokio Contributors",
@@ -550,15 +608,13 @@ class TestDeduplicateComponents(unittest.TestCase):
         result = deduplicate_components(components)
         self.assertEqual(len(result), 1)
 
-    def test_prefers_known_version_over_unknown(self):
-        """When one entry has version='unknown' and the other has a real version, keep real."""
+    def test_keeps_different_versions(self):
         components = [
-            {"name": "serde", "version": "unknown"},
-            {"name": "serde", "version": "1.0.228"},
+            {"name": "shlex", "version": "1.3.0"},
+            {"name": "shlex", "version": "2.0.1"},
+            {"name": "shlex", "version": "unknown"},
         ]
-        result = deduplicate_components(components)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["version"], "1.0.228")
+        self.assertEqual(deduplicate_components(components), components)
 
     def test_prefers_entry_with_license(self):
         """When one entry has no license and the other does, keep the licensed one."""
@@ -573,15 +629,48 @@ class TestDeduplicateComponents(unittest.TestCase):
     def test_empty_components(self):
         self.assertEqual(deduplicate_components([]), [])
 
+    def test_duplicates_preserve_metadata(self):
+        entries = [
+            {
+                "name": "shlex",
+                "version": "1.3.0",
+                "checksum": "a" * 64,
+                "description": "Shell words",
+                "license": "",
+            },
+            {"name": "shlex", "version": "1.3.0", "license": "MIT"},
+        ]
+        for order in (entries, list(reversed(entries))):
+            with self.subTest(order=order):
+                components = [dict(entry) for entry in order] + [
+                    {
+                        "name": "shlex",
+                        "version": "1.3.0",
+                        "checksum": "b" * 64,
+                        "description": "",
+                        "license": "",
+                    },
+                    {"name": "shlex", "version": "2.0.1", "supplier": "Other supplier"},
+                ]
+                result = deduplicate_components(components)
+                self.assertEqual(len(result), 2)
+                self.assertEqual(result[0]["checksum"], "a" * 64)
+                self.assertEqual(result[0]["description"], "Shell words")
+                self.assertEqual(result[0]["license"], "MIT")
+                self.assertNotIn("supplier", result[0])
+                self.assertNotIn("checksum", result[1])
+                self.assertNotIn("license", result[1])
+
     def test_three_duplicates_kept_correctly(self):
         components = [
-            {"name": "foo", "version": "unknown", "license": ""},
+            {"name": "foo", "version": "1.0", "license": ""},
             {"name": "foo", "version": "1.0", "license": ""},
             {"name": "foo", "version": "1.0", "license": "MIT"},
         ]
         result = deduplicate_components(components)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["version"], "1.0")
+        self.assertEqual(result[0]["license"], "MIT")
 
 
 # ---------------------------------------------------------------------------
@@ -1120,6 +1209,73 @@ class TestMain(unittest.TestCase):
     # --crates-cache
     # -----------------------------------------------------------------------
 
+    def test_multiple_crate_versions_in_both_formats(self):
+        checksums = {"1.3.0": "a" * 64, "2.0.1": "b" * 64}
+        cache = {
+            f"shlex@{version}": {"version": version, "checksum": checksum}
+            for version, checksum in checksums.items()
+        }
+        # The versioned entry must win over an old name-only entry.
+        cache["shlex"] = {"version": "1.3.0", "checksum": "c" * 64}
+        cache_path = os.path.join(self.tmpdir, "crates_cache.json")
+        with open(cache_path, "w") as f:
+            json.dump(cache, f)
+        repos = [f"rules_rust++crate+crate_index__shlex-{v}" for v in checksums]
+        for repo_order in (repos, list(reversed(repos)), repos[:1]):
+            with self.subTest(repo_order=repo_order):
+                self._run(
+                    input_data={
+                        **self._DEFAULT_INPUT,
+                        "external_repos": repo_order + repo_order,
+                        "exclude_patterns": ["rules_cc"],
+                        "external_dep_edges": [
+                            f"{repos[0]}::{repos[1]}",
+                            f"{repos[0]}::{repos[1]}",
+                            f"{repos[0]}::{repos[0]}",
+                            f"missing::{repos[0]}",
+                            f"{repos[0]}::rules_cc+",
+                            "malformed",
+                        ],
+                    },
+                    metadata={},
+                    extra_args=["--crates-cache", cache_path],
+                )
+                with open(self._spdx_path) as f:
+                    spdx = json.load(f)
+                packages = [p for p in spdx["packages"] if p["name"] == "shlex"]
+                self.assertEqual(len(packages), 2)
+                for package in packages:
+                    version = package["versionInfo"]
+                    self.assertEqual(package["SPDXID"], f"SPDXRef-shlex-{version}")
+                    self.assertEqual(
+                        package["checksums"],
+                        [{"algorithm": "SHA256", "checksumValue": checksums[version]}],
+                    )
+                    self.assertIn(
+                        f"pkg:cargo/shlex@{version}",
+                        [r["referenceLocator"] for r in package["externalRefs"]],
+                    )
+                with open(self._cdx_path) as f:
+                    cdx = json.load(f)
+                self.assertEqual(len(cdx["components"]), 2)
+                refs = set()
+                for component in cdx["components"]:
+                    version = component["version"]
+                    refs.add(component["bom-ref"])
+                    self.assertEqual(component["purl"], f"pkg:cargo/shlex@{version}")
+                    self.assertEqual(
+                        component["hashes"],
+                        [{"alg": "SHA-256", "content": checksums[version]}],
+                    )
+                self.assertEqual(len(refs), 2)
+                root_ref = cdx["metadata"]["component"]["bom-ref"]
+                root_deps = next(d for d in cdx["dependencies"] if d["ref"] == root_ref)
+                self.assertEqual(set(root_deps["dependsOn"]), refs)
+                dependencies = {d["ref"]: d["dependsOn"] for d in cdx["dependencies"]}
+                self.assertEqual(dependencies["shlex@1.3.0"], ["shlex@2.0.1"])
+                self.assertEqual(dependencies["shlex@2.0.1"], [])
+                self.assertEqual(set(dependencies), refs | {root_ref})
+
     def test_crates_cache_enriches_crate(self):
         """--crates-cache provides license and version data for resolved crate repos."""
         cache = {
@@ -1173,13 +1329,21 @@ class TestMain(unittest.TestCase):
         metadata = {
             "modules": {
                 "nlohmann_json": {
-                    "version": "3.11.3",
-                    "purl": "pkg:generic/nlohmann_json@3.11.3",
+                    "version": "unknown",
+                    "purl": "pkg:generic/nlohmann_json@unknown",
                     "license": "MIT",
                 }
             }
         }
-        self._run(metadata=metadata, extra_args=["--cdxgen-sbom", cdxgen_path])
+        self._run(
+            input_data={
+                **self._DEFAULT_INPUT,
+                "external_repos": ["nlohmann_json+", "nlohmann_json+"],
+                "external_dep_edges": ["nlohmann_json+::helper"],
+            },
+            metadata=metadata,
+            extra_args=["--cdxgen-sbom", cdxgen_path],
+        )
         with open(self._cdx_path) as f:
             cdx = json.load(f)
         comp = next(
@@ -1187,6 +1351,9 @@ class TestMain(unittest.TestCase):
         )
         self.assertIsNotNone(comp)
         self.assertEqual(comp.get("description"), "JSON for Modern C++")
+        self.assertEqual(comp["version"], "3.11.3")
+        dependency = next(d for d in cdx["dependencies"] if d["ref"] == comp["bom-ref"])
+        self.assertEqual(dependency["dependsOn"], ["helper@unknown"])
 
     # -----------------------------------------------------------------------
     # Output file selection

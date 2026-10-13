@@ -102,12 +102,14 @@ class TestParseDashSummary(unittest.TestCase):
         summary = (
             "crate/cratesio/-/serde/1.0.228, Apache-2.0 OR MIT, approved, clearlydefined\n"
             "crate/cratesio/-/tokio/1.10.0, MIT, approved, clearlydefined\n"
+            "crate/cratesio/-/serde/2.0.0, Apache-2.0, approved, clearlydefined\n"
         )
         path = self._write_summary(summary)
         result = parse_dash_summary(path)
 
-        self.assertEqual(result["serde"], "Apache-2.0 OR MIT")
-        self.assertEqual(result["tokio"], "MIT")
+        self.assertEqual(result["serde@1.0.228"], "Apache-2.0 OR MIT")
+        self.assertEqual(result["tokio@1.10.0"], "MIT")
+        self.assertEqual(result["serde@2.0.0"], "Apache-2.0")
 
     def test_empty_license_skipped(self):
         """Entries with empty license expressions are not included."""
@@ -118,8 +120,8 @@ class TestParseDashSummary(unittest.TestCase):
         path = self._write_summary(summary)
         result = parse_dash_summary(path)
 
-        self.assertIn("serde", result)
-        self.assertNotIn("unknown-crate", result)
+        self.assertIn("serde@1.0.228", result)
+        self.assertNotIn("unknown-crate@0.1.0", result)
 
     def test_compound_spdx_expression(self):
         """Compound SPDX expressions (AND/OR) are preserved."""
@@ -131,8 +133,8 @@ class TestParseDashSummary(unittest.TestCase):
         path = self._write_summary(summary)
         result = parse_dash_summary(path)
 
-        self.assertIn("ring", result)
-        self.assertIn("Apache-2.0", result["ring"])
+        self.assertIn("ring@0.17.14", result)
+        self.assertIn("Apache-2.0", result["ring@0.17.14"])
 
     def test_malformed_lines_skipped(self):
         """Lines with fewer than 4 comma-separated fields are ignored."""
@@ -146,7 +148,7 @@ class TestParseDashSummary(unittest.TestCase):
         result = parse_dash_summary(path)
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result["serde"], "MIT")
+        self.assertEqual(result["serde@1.0.228"], "MIT")
 
     def test_non_crate_entries_skipped(self):
         """Non-crate entries (pypi, npm, etc.) are ignored."""
@@ -159,7 +161,7 @@ class TestParseDashSummary(unittest.TestCase):
         result = parse_dash_summary(path)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("serde", result)
+        self.assertIn("serde@1.0.228", result)
 
     def test_empty_file(self):
         """An empty summary file produces an empty dict."""
@@ -173,7 +175,7 @@ class TestParseDashSummary(unittest.TestCase):
         path = self._write_summary(summary)
         result = parse_dash_summary(path)
 
-        self.assertEqual(result["openssl-sys"], "OpenSSL")
+        self.assertEqual(result["openssl-sys@0.9.104"], "OpenSSL")
 
     def test_licenseref_expression(self):
         """LicenseRef-* expressions are preserved."""
@@ -181,7 +183,7 @@ class TestParseDashSummary(unittest.TestCase):
         path = self._write_summary(summary)
         result = parse_dash_summary(path)
 
-        self.assertEqual(result["ring"], "LicenseRef-ring")
+        self.assertEqual(result["ring@0.17.14"], "LicenseRef-ring")
 
 
 class TestParseModuleBazelLock(unittest.TestCase):
@@ -217,9 +219,9 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 2)
-        self.assertEqual(result["serde"]["version"], "1.0.228")
-        self.assertEqual(result["serde"]["checksum"], "abc123def456")
-        self.assertEqual(result["tokio"]["version"], "1.10.0")
+        self.assertEqual(result["serde@1.0.228"]["version"], "1.0.228")
+        self.assertEqual(result["serde@1.0.228"]["checksum"], "abc123def456")
+        self.assertEqual(result["tokio@1.10.0"]["version"], "1.10.0")
 
     def test_crate_index_meta_repo_skipped(self):
         """The crate_index meta-repo entry is not treated as a crate."""
@@ -241,7 +243,7 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("serde", result)
+        self.assertIn("serde@1.0.228", result)
 
     def test_complex_crate_name(self):
         """Crate names with multiple hyphens (e.g. iceoryx2-qnx8) are parsed correctly."""
@@ -262,8 +264,8 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("iceoryx2-bb-lock-free-qnx8", result)
-        self.assertEqual(result["iceoryx2-bb-lock-free-qnx8"]["version"], "0.7.0")
+        self.assertIn("iceoryx2-bb-lock-free-qnx8@0.7.0", result)
+        self.assertEqual(result["iceoryx2-bb-lock-free-qnx8@0.7.0"]["version"], "0.7.0")
 
     def test_no_crate_extension(self):
         """Lockfile without crate extension returns empty dict."""
@@ -352,6 +354,44 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
+    @mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")
+    def test_cache_keeps_versions_from_each_lockfile(self, mock_get):
+        versions = {"1.3.0": ("a" * 64, "MIT"), "2.0.1": ("b" * 64, "Apache-2.0")}
+        mock_get.side_effect = lambda url: {
+            "version": {"license": versions.get(url.rsplit("/", 1)[-1], ("", ""))[1]}
+        }
+        module_lock = self._write_module_lock(
+            [
+                ("shlex", version, checksum)
+                for version, (checksum, _) in versions.items()
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cargo_lock = os.path.join(tmpdir, "Cargo.lock")
+            with open(cargo_lock, "w") as f:
+                for version, (checksum, _) in versions.items():
+                    f.write(
+                        f'[[package]]\nname = "shlex"\nversion = "{version}"\n'
+                        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                        f'checksum = "{checksum}"\n'
+                    )
+            for inputs in (
+                {"cargo_lock_path": cargo_lock},
+                {"module_lock_paths": [module_lock]},
+                {
+                    "cargo_lock_path": cargo_lock,
+                    "module_lock_paths": [module_lock, module_lock],
+                },
+            ):
+                with self.subTest(inputs=inputs):
+                    cache = generate_cache(**inputs)
+                    self.assertEqual(set(cache), {f"shlex@{v}" for v in versions})
+                    for version, (checksum, license_expr) in versions.items():
+                        entry = cache[f"shlex@{version}"]
+                        self.assertEqual(entry["checksum"], checksum)
+                        self.assertEqual(entry["license"], license_expr)
+                        self.assertEqual(entry["purl"], f"pkg:cargo/shlex@{version}")
+
     def test_normalize_license_expression_slash_to_or(self):
         """crates.io slash separator must be normalized to SPDX OR."""
         self.assertEqual(
@@ -365,7 +405,7 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
     def test_generate_cache_uses_cratesio_license_when_dash_disabled(self, mock_fetch):
         """Without dash-license-scan, crates.io license is used as fallback source."""
         mock_fetch.return_value = {
-            "serde": {
+            "serde@1.0.228": {
                 "license": "MIT OR Apache-2.0",
                 "description": "Serde framework",
                 "supplier": "serde-rs",
@@ -377,9 +417,9 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             module_lock_paths=[module_lock], use_dash_license_scan=False
         )
 
-        self.assertEqual(cache["serde"]["license"], "MIT OR Apache-2.0")
-        self.assertEqual(cache["serde"]["description"], "Serde framework")
-        self.assertEqual(cache["serde"]["supplier"], "serde-rs")
+        self.assertEqual(cache["serde@1.0.228"]["license"], "MIT OR Apache-2.0")
+        self.assertEqual(cache["serde@1.0.228"]["description"], "Serde framework")
+        self.assertEqual(cache["serde@1.0.228"]["supplier"], "serde-rs")
 
     @mock.patch("scripts.generate_crates_metadata_cache.parse_dash_summary")
     @mock.patch("scripts.generate_crates_metadata_cache.run_dash_license_scan")
@@ -394,20 +434,20 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
     ):
         """When enabled, dash-license-scan license must override crates.io license."""
         mock_fetch.return_value = {
-            "serde": {
+            "serde@1.0.228": {
                 "license": "MIT OR Apache-2.0",
                 "description": "Serde framework",
                 "supplier": "serde-rs",
             }
         }
-        mock_parse_dash.return_value = {"serde": "Apache-2.0"}
+        mock_parse_dash.return_value = {"serde@1.0.228": "Apache-2.0"}
         module_lock = self._write_module_lock([("serde", "1.0.228", "abc123")])
 
         cache = generate_cache(
             module_lock_paths=[module_lock], use_dash_license_scan=True
         )
 
-        self.assertEqual(cache["serde"]["license"], "Apache-2.0")
+        self.assertEqual(cache["serde@1.0.228"]["license"], "Apache-2.0")
 
     @mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")
     def test_fetch_one_crate_meta_uses_locked_version_for_license(self, mock_get):
@@ -459,12 +499,17 @@ class TestEndToEndLicenseExtraction(unittest.TestCase):
         path = self._write_summary(summary)
         license_map = parse_dash_summary(path)
 
-        self.assertEqual(license_map["serde"], "Apache-2.0 OR MIT")
-        self.assertEqual(license_map["tokio"], "MIT")
+        self.assertEqual(license_map["serde@1.0.228"], "Apache-2.0 OR MIT")
+        self.assertEqual(license_map["tokio@1.10.0"], "MIT")
 
     def test_kyron_style_crates(self):
         """Verify license extraction works for crates typical in the score_kyron module."""
-        crate_names = ["proc-macro2", "quote", "syn", "iceoryx2"]
+        crate_names = [
+            "proc-macro2@1.0.92",
+            "quote@1.0.37",
+            "syn@2.0.96",
+            "iceoryx2@0.7.0",
+        ]
 
         summary = (
             "crate/cratesio/-/proc-macro2/1.0.92, Apache-2.0 OR MIT, approved, clearlydefined\n"
