@@ -133,6 +133,40 @@ class TestSpdxFormatter(unittest.TestCase):
         self.assertEqual(len(describes), 1)
         self.assertEqual(len(depends_on), 2)
 
+    def test_dependency_edges_use_exact_versions(self):
+        components = [
+            {"name": "bindgen", "version": "0.72.1"},
+            {"name": "cc", "version": "1.8.0"},
+            {"name": "shlex", "version": "1.3.0"},
+            {"name": "shlex", "version": "2.0.1"},
+        ]
+        repositories = {
+            f"crate_index__{c['name']}-{c['version']}": c for c in components
+        }
+        edges = [
+            "crate_index__bindgen-0.72.1::crate_index__shlex-1.3.0",
+            "crate_index__cc-1.8.0::crate_index__shlex-2.0.1",
+        ]
+        for retained in (components, components[:-1]):
+            with self.subTest(retained_versions=[c["version"] for c in retained]):
+                spdx = generate_spdx(
+                    retained,
+                    self.config,
+                    self.timestamp,
+                    external_dep_edges=edges,
+                    repository_components=repositories,
+                )
+                actual = {
+                    (r["spdxElementId"], r["relatedSpdxElement"])
+                    for r in spdx["relationships"]
+                    if r["relationshipType"] == "DEPENDS_ON"
+                    and r["spdxElementId"] != "SPDXRef-RootPackage"
+                }
+                expected = {("SPDXRef-bindgen-0.72.1", "SPDXRef-shlex-1.3.0")}
+                if len(retained) == 4:
+                    expected.add(("SPDXRef-cc-1.8.0", "SPDXRef-shlex-2.0.1"))
+                self.assertEqual(actual, expected)
+
     def test_generate_spdx_with_empty_components(self):
         """Test generating SPDX with no components."""
         spdx = generate_spdx([], self.config, self.timestamp)

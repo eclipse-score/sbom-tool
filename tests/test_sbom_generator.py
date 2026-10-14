@@ -1400,6 +1400,58 @@ class TestMain(unittest.TestCase):
     # Dangling dependency ref fixes
     # -----------------------------------------------------------------------
 
+    def test_spdx_preserves_dependency_chain(self):
+        crate_repo = "rules_rust++crate+crate_index__shlex-1.3.0"
+        input_data = {
+            **self._DEFAULT_INPUT,
+            "external_repos": ["my_app+", "wrapper+", "rules_cc+"],
+            "exclude_patterns": ["rules_"],
+            "external_dep_edges": [
+                "my_app+::wrapper+",
+                "wrapper+::helper+",
+                "wrapper::helper",
+                "helper+::" + crate_repo,
+                "wrapper+::wrapper",
+                "wrapper+::my_app+",
+                "wrapper+::rules_cc+",
+                "rules_cc+::helper+",
+                "missing::helper+",
+                "malformed",
+            ],
+        }
+        metadata = {
+            "modules": {
+                name: {"version": "1.0"} for name in ("my_app", "wrapper", "helper")
+            }
+        }
+        self._run(input_data=input_data, metadata=metadata)
+        with open(self._spdx_path) as f:
+            spdx = json.load(f)
+        actual = [
+            (r["spdxElementId"], r["relationshipType"], r["relatedSpdxElement"])
+            for r in spdx["relationships"]
+        ]
+        root = "SPDXRef-RootPackage"
+        wrapper, helper, crate = (
+            "SPDXRef-wrapper-1.0",
+            "SPDXRef-helper-1.0",
+            "SPDXRef-shlex-1.3.0",
+        )
+        expected = {
+            ("SPDXRef-DOCUMENT", "DESCRIBES", root),
+            (root, "DEPENDS_ON", wrapper),
+            (root, "DEPENDS_ON", helper),
+            (root, "DEPENDS_ON", crate),
+            (wrapper, "DEPENDS_ON", helper),
+            (helper, "DEPENDS_ON", crate),
+            (wrapper, "DEPENDS_ON", root),
+        }
+        self.assertEqual(set(actual), expected)
+        self.assertEqual(len(actual), len(expected))
+        self.assertEqual(
+            {p["SPDXID"] for p in spdx["packages"]}, {root, wrapper, helper, crate}
+        )
+
     def test_edge_only_dst_git_repo_gets_component(self):
         """A dep-edge destination not in external_repos but registered as a
         git_repository must appear as a component in the output.

@@ -282,6 +282,10 @@ use `name@version` keys so each version keeps its own checksum and license.
 - **CycloneDX 1.6**: Emitted with `"specVersion": "1.6"` and `"$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json"`.
 
 
+SPDX output includes dependency links between packages from the Bazel graph,
+as well as the root package's dependency list. Links use exact package versions.
+Links to omitted packages and self-dependencies are skipped.
+
 ## How design is tested
 
 Two layers: unit tests over the generator internals, and an end-to-end

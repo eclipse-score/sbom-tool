@@ -30,6 +30,8 @@ def generate_spdx(
     components: list[dict[str, Any]],
     config: dict[str, Any],
     timestamp: str,
+    external_dep_edges: list[str] | None = None,
+    repository_components: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate SPDX 2.3 JSON document.
 
@@ -37,6 +39,8 @@ def generate_spdx(
         components: List of component dictionaries
         config: Configuration dictionary with producer info
         timestamp: ISO 8601 timestamp
+        external_dep_edges: Bazel repository edges in "source::destination" format
+        repository_components: Resolved components keyed by repository name
 
     Returns:
         SPDX 2.3 compliant dictionary
@@ -80,10 +84,15 @@ def generate_spdx(
         }
     )
 
+    component_ids = {}
+
     # Add dependency packages
     for comp in components:
         pkg, spdx_id = _create_spdx_package(comp)
         packages.append(pkg)
+        component_ids[(comp.get("name", "unknown"), comp.get("version", "unknown"))] = (
+            spdx_id
+        )
 
         # Root depends on each component
         relationships.append(
@@ -93,6 +102,40 @@ def generate_spdx(
                 "relatedSpdxElement": spdx_id,
             }
         )
+
+    # Match the exact version; an omitted package must not point to another version.
+    repository_ids = {
+        repo.rstrip("+"): (
+            root_spdx_id
+            if comp.get("name") == component_name
+            else component_ids.get(
+                (comp.get("name", "unknown"), comp.get("version", "unknown"))
+            )
+        )
+        for repo, comp in (repository_components or {}).items()
+    }
+    seen_edges = {(r["spdxElementId"], r["relatedSpdxElement"]) for r in relationships}
+    for edge in sorted(set(external_dep_edges or [])):
+        if "::" not in edge:
+            continue
+        src, dst = edge.split("::", 1)
+        src_id = repository_ids.get(src.rstrip("+"))
+        dst_id = repository_ids.get(dst.rstrip("+"))
+        if (
+            not src_id
+            or not dst_id
+            or src_id == dst_id
+            or (src_id, dst_id) in seen_edges
+        ):
+            continue
+        relationships.append(
+            {
+                "spdxElementId": src_id,
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": dst_id,
+            }
+        )
+        seen_edges.add((src_id, dst_id))
 
     # Collect LicenseRef-* identifiers used in packages and declare them
     extracted = _collect_extracted_license_infos(packages)

@@ -714,7 +714,13 @@ def main() -> int:
 
     # Generate outputs
     if args.spdx_output:
-        spdx = generate_spdx(components, config, timestamp)
+        spdx = generate_spdx(
+            components,
+            config,
+            timestamp,
+            external_dep_edges=data.get("external_dep_edges", []),
+            repository_components=repository_components,
+        )
         Path(args.spdx_output).write_text(json.dumps(spdx, indent=2), encoding="utf-8")
 
     if args.cyclonedx_output:
