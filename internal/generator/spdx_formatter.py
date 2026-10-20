@@ -23,7 +23,11 @@ import re
 import uuid
 from typing import Any
 
-from internal.generator.utils import _normalize_spdx_license
+from internal.generator.utils import (
+    _normalize_spdx_license,
+    component_identity,
+    distinct_component_ids,
+)
 
 
 def generate_spdx(
@@ -84,15 +88,20 @@ def generate_spdx(
         }
     )
 
-    component_ids = {}
+    dependency_packages = [_create_spdx_package(comp) for comp in components]
+    component_ids = distinct_component_ids(
+        {
+            component_identity(comp): spdx_id
+            for comp, (_, spdx_id) in zip(components, dependency_packages)
+        },
+        {root_spdx_id, "SPDXRef-DOCUMENT"},
+    )
 
     # Add dependency packages
-    for comp in components:
-        pkg, spdx_id = _create_spdx_package(comp)
+    for comp, (pkg, _) in zip(components, dependency_packages):
+        spdx_id = component_ids[component_identity(comp)]
+        pkg["SPDXID"] = spdx_id
         packages.append(pkg)
-        component_ids[(comp.get("name", "unknown"), comp.get("version", "unknown"))] = (
-            spdx_id
-        )
 
         # Root depends on each component
         relationships.append(
@@ -103,14 +112,14 @@ def generate_spdx(
             }
         )
 
-    # Match the exact version; an omitted package must not point to another version.
+    # Match the ecosystem and version when resolving dependency edges.
     repository_ids = {
-        repo.rstrip("+"): (
+        repo.rstrip("+"): component_ids.get(
+            component_identity(comp),
             root_spdx_id
             if comp.get("name") == component_name
-            else component_ids.get(
-                (comp.get("name", "unknown"), comp.get("version", "unknown"))
-            )
+            and component_identity(comp)[2] not in ("cargo", "pypi")
+            else None,
         )
         for repo, comp in (repository_components or {}).items()
     }

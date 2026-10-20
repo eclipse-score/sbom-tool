@@ -36,6 +36,8 @@ def _sbom_aspect_impl(target, ctx):
     external_repos_direct = []
     external_dep_edges_direct = []
     external_dep_edges_list = []
+    crate_manifests = []
+    crate_manifest_sets = []
 
     # Get this target's label info
     label = target.label
@@ -45,6 +47,14 @@ def _sbom_aspect_impl(target, ctx):
         from_repo = label.workspace_name
     else:
         from_repo = ""
+
+    if "crate_index__" in from_repo or "crates_io__" in from_repo or "_crates__" in from_repo or "crate+" in from_repo:
+        for attr_name in ["compile_data", "data"]:
+            if hasattr(ctx.rule.files, attr_name):
+                for f in getattr(ctx.rule.files, attr_name):
+                    # Ignore manifests in examples or nested packages.
+                    if f.owner.workspace_name == from_repo and f.owner.package == "" and f.owner.name == "Cargo.toml":
+                        crate_manifests.append(f)
 
     # Collect from rule attributes that represent dependencies
     dep_attrs = ["deps", "srcs", "data", "proc_macro_deps", "crate_root", "compile_data"]
@@ -60,6 +70,8 @@ def _sbom_aspect_impl(target, ctx):
                                 "{}::{}".format(from_repo, dep.label.workspace_name),
                             )
                         if SbomDepsInfo in dep:
+                            crate_manifest_sets.append(dep[SbomDepsInfo].crate_manifests)
+
                             # Propagate transitive deps from dependencies
                             transitive_deps_list.append(dep[SbomDepsInfo].transitive_deps)
                             external_repos_list.append(dep[SbomDepsInfo].external_repos)
@@ -72,6 +84,7 @@ def _sbom_aspect_impl(target, ctx):
                         "{}::{}".format(from_repo, attr_val.label.workspace_name),
                     )
                 if SbomDepsInfo in attr_val:
+                    crate_manifest_sets.append(attr_val[SbomDepsInfo].crate_manifests)
                     transitive_deps_list.append(attr_val[SbomDepsInfo].transitive_deps)
                     external_repos_list.append(attr_val[SbomDepsInfo].external_repos)
                     external_dep_edges_list.append(attr_val[SbomDepsInfo].external_dep_edges)
@@ -90,11 +103,13 @@ def _sbom_aspect_impl(target, ctx):
                                 "{}::{}".format(from_repo, dep.label.workspace_name),
                             )
                         if SbomDepsInfo in dep:
+                            crate_manifest_sets.append(dep[SbomDepsInfo].crate_manifests)
                             transitive_deps_list.append(dep[SbomDepsInfo].transitive_deps)
                             external_repos_list.append(dep[SbomDepsInfo].external_repos)
                             external_dep_edges_list.append(dep[SbomDepsInfo].external_dep_edges)
 
     return [SbomDepsInfo(
+        crate_manifests = depset(direct = crate_manifests, transitive = crate_manifest_sets),
         direct_deps = depset(direct_deps),
         transitive_deps = depset(
             direct = [label],

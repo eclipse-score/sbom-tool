@@ -37,10 +37,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import http.client
+import threading
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 
 def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
@@ -52,20 +62,8 @@ def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
     Returns:
         Dict mapping name@version to {version, checksum, source}
     """
-    try:
-        import tomllib as tomli  # Python 3.11+
-    except ImportError:
-        try:
-            import tomli
-        except ImportError:
-            print(
-                "ERROR: tomli/tomllib library not found. Use Python 3.11+ or install tomli",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
     with open(lockfile_path, "rb") as f:
-        lock_data = tomli.load(f)
+        lock_data = tomllib.load(f)
 
     crates = {}
     for package in lock_data.get("package", []):
@@ -95,7 +93,7 @@ def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         lockfile_path: Path to MODULE.bazel.lock file
 
     Returns:
-        Dict mapping name@version to {version, checksum, source}
+        Dict mapping canonical repository names to crate metadata
     """
     with open(lockfile_path, encoding="utf-8") as f:
         lock_data = json.load(f)
@@ -121,11 +119,11 @@ def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
     specs = general.get("generatedRepoSpecs", {})
 
     for repo_name, spec in specs.items():
-        # Skip the crate_index meta-repo itself
-        if repo_name == "crate_index" or not repo_name.startswith("crate_index__"):
+        # Crate repositories use <hub>__<name>-<version>; skip the hub itself.
+        if "__" not in repo_name:
             continue
 
-        crate_part = repo_name.replace("crate_index__", "")
+        crate_part = repo_name.split("__", 1)[1]
 
         # Parse name-version (e.g., "serde-1.0.228", "iceoryx2-qnx8-0.7.0")
         m = re.match(r"^(.+?)-(\d+\.\d+\.\d+.*)$", crate_part)
@@ -136,15 +134,143 @@ def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         version = m.group(2)
         attrs = spec.get("attributes", {})
         sha256 = attrs.get("sha256", "")
+        archive_prefix = attrs.get("strip_prefix", "")
+        exact_version = archive_prefix.removeprefix(name + "-")
+        version_from_repository = True
+        if (
+            archive_prefix.startswith(name + "-")
+            and exact_version.replace("+", "-") == version
+        ):
+            version = exact_version
+            version_from_repository = False
 
-        crates[f"{name}@{version}"] = {
+        repository = (
+            ext_key.split("//")[0].lstrip("@")
+            + "+"
+            + ext_key.rsplit("%", 1)[-1]
+            + "+"
+            + repo_name
+        )
+        crates[repository] = {
             "name": name,
             "version": version,
+            "version_from_repository": version_from_repository,
             "checksum": sha256,
-            "source": "module-bazel-lock",
+            "source": (
+                "registry+https://github.com/rust-lang/crates.io-index"
+                if _is_cratesio_archive(attrs, name, version)
+                else "module-bazel-lock"
+            ),
+            "repository": repository,
         }
 
     return crates
+
+
+def _is_cratesio_archive(attrs: dict[str, Any], name: str, version: str) -> bool:
+    """Only permit API fallback for a matching, unpatched crates.io archive."""
+    if any(
+        attrs.get(k)
+        for k in ("remote", "patches", "remote_patches", "patch_cmds", "patch_cmds_win")
+    ):
+        return False
+    paths = {
+        ("static.crates.io", f"/crates/{name}/{version}/download"),
+        ("static.crates.io", f"/crates/{name}/{name}-{version}.crate"),
+        ("crates.io", f"/api/v1/crates/{name}/{version}/download"),
+    }
+    urls = attrs.get("urls", []) or [attrs.get("url", "")]
+    return bool(urls) and all(
+        (parsed.scheme == "https" and (parsed.netloc, parsed.path) in paths)
+        for parsed in map(urllib.parse.urlsplit, urls)
+    )
+
+
+def select_build_crates(
+    crates: dict[str, dict[str, Any]],
+    deps_path: str,
+    cargo_packages: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Associate manifests with the selected Bazel repositories, not cache names."""
+    with open(deps_path, encoding="utf-8") as f:
+        deps = json.load(f)
+    repositories = set(deps["external_repos"])
+    for edge in deps.get("external_dep_edges", []):
+        if "::" in edge:
+            destination = edge.split("::", 1)[1].rstrip("+")
+            if destination:
+                repositories.add(destination)
+    selected = {}
+    for repo in sorted(repositories):
+        if not any(
+            marker in repo
+            for marker in ("crate_index__", "crates_io__", "_crates__", "crate+")
+        ):
+            continue
+        crate_part = repo.rsplit("+", 1)[-1].split("__", 1)[-1]
+        match = re.fullmatch(r"(.+?)-(\d+\.\d+\.\d+.*)", crate_part)
+        if not match:
+            continue
+        name, version = match.groups()
+        locked = crates.get(repo, {})
+        # A name/version match alone does not prove this is the same source.
+        info = locked if locked.get("repository") == repo else {}
+        if not info and cargo_packages is not None:
+            # In Cargo.lock-only builds, the supplied lockfile describes the source.
+            matches = [
+                p
+                for p in cargo_packages
+                if p["name"] == name and p["version"].replace("+", "-") == version
+            ]
+            if len(matches) == 1:
+                info = {**matches[0], "version_from_repository": False}
+        selected["repo:" + repo] = {
+            **info,
+            "name": name,
+            "version": info.get("version", version),
+            "version_from_repository": info.get("version_from_repository", True),
+            "checksum": info.get("checksum", ""),
+            "source": info.get("source", "unknown"),
+            "repository": repo,
+            "manifest": deps.get("crate_manifests", {}).get(repo),
+        }
+    return selected
+
+
+def read_manifest_license(info: dict[str, Any]) -> tuple[str, str]:
+    """Return a direct license expression or the reason it could not be read."""
+    path = info.get("manifest")
+    if not path:
+        return "", "Cargo.toml unavailable"
+    try:
+        with open(path, "rb") as f:
+            package = tomllib.load(f).get("package", {})
+    except (OSError, ValueError) as exc:
+        return "", f"Cannot read Cargo.toml: {exc}"
+    name, version = package.get("name"), package.get("version")
+    if (
+        info.get("version_from_repository")
+        and isinstance(version, str)
+        and version.replace("+", "-") == info["version"]
+    ):
+        info["version"] = version
+    if name != info["name"] or (
+        version != info["version"] and version != {"workspace": True}
+    ):
+        raise ValueError(
+            f"Manifest identity mismatch for {info['repository']}: "
+            f"expected {info['name']}@{info['version']}, found {name}@{version}"
+        )
+    if version == {"workspace": True}:
+        return "", "Workspace version inheritance is not supported"
+    license_expr = package.get("license")
+    if isinstance(license_expr, str) and license_expr.strip():
+        return _normalize_license_expression(license_expr.strip()), ""
+    if license_expr == {"workspace": True}:
+        return "", "Workspace license inheritance is not supported"
+    if package.get("license-file"):
+        return "", "license-file processing is not supported"
+    return "", "Cargo.toml has no direct license expression"
 
 
 def generate_synthetic_cargo_lock(
@@ -320,67 +446,90 @@ def _normalize_license_expression(license_expr: str) -> str:
     return " OR ".join(part.strip() for part in license_expr.split("/") if part.strip())
 
 
+_request_lock = threading.Lock()
+_last_request = 0.0
+
+
 def _cratesio_get(url: str) -> dict[str, Any]:
+    """Limit API requests to one per second and retry transient failures."""
+    global _last_request
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "score-sbom-tool (https://eclipse.dev/score)"},
+        headers={
+            "User-Agent": "score-sbom-tool (https://github.com/eclipse-score/sbom-tool)"
+        },
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+    for attempt in range(3):
+        with _request_lock:
+            delay = 1.0 - (time.monotonic() - _last_request)
+            if delay > 0:
+                time.sleep(delay)
+            _last_request = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if not isinstance(data, dict):
+                    raise ValueError("API response must be a JSON object")
+                return data
+        except (OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                if exc.code != 429 and not 500 <= exc.code < 600:
+                    raise
+            if attempt == 2:
+                if isinstance(exc, http.client.HTTPException):
+                    raise urllib.error.URLError(exc) from exc
+                raise
+            time.sleep(2**attempt)
+    raise AssertionError("Unreachable")
 
 
-def _fetch_one_crate_meta(name: str, version: str) -> tuple[str, dict[str, str]]:
-    """Fetch metadata for a single crate from crates.io API.
+def _fetch_one_crate_meta(
+    name: str, version: str, fetch_license: bool = True
+) -> tuple[str, dict[str, str]]:
+    """Fetch an exact-version license when needed; retain existing description lookup."""
+    meta = {"license": "", "description": "", "supplier": ""}
+    if fetch_license:
+        url = f"https://crates.io/api/v1/crates/{name}/{version}"
+        try:
+            version_data = _cratesio_get(url).get("version", {})
+            if not isinstance(version_data, dict):
+                raise ValueError("API response has invalid version metadata")
+            if (
+                version_data.get("crate", name) != name
+                or version_data.get("num", version) != version
+            ):
+                raise ValueError("API response identifies a different crate or version")
+            license_expr = version_data.get("license")
+            if isinstance(license_expr, str) and license_expr.strip():
+                meta["license"] = _normalize_license_expression(license_expr.strip())
+                meta["license_source"] = url
+            else:
+                meta["license_error"] = "API response has no license expression"
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            meta["license_error"] = f"API request failed ({url}): {exc}"
 
-    Returns (name, {description, supplier, license}) dict.
-    If the crate isn't found, retries with platform suffixes stripped
-    (e.g. "-qnx8") to find the upstream crate.
-
-    The crate-level endpoint (used for description/supplier) has no license
-    field; license is only available per-version, so it is fetched from the
-    version-scoped endpoint pinned to the exact locked version. Fetching by
-    crate name alone would silently return the current/latest release's
-    license, which can differ from the locked version's.
-    """
     candidates = [name]
-    # Platform-specific forks (e.g. iceoryx2-bb-lock-free-qnx8 -> iceoryx2-bb-lock-free)
-    for suffix in ("-qnx8",):
-        if name.endswith(suffix):
-            candidates.append(name[: -len(suffix)])
-
+    if name.endswith("-qnx8"):
+        candidates.append(name[: -len("-qnx8")])
     for candidate in candidates:
-        desc = ""
-        supplier = ""
         try:
             data = _cratesio_get(f"https://crates.io/api/v1/crates/{candidate}")
             crate = data.get("crate", {})
-            desc = (crate.get("description") or "").strip()
-            supplier = _extract_supplier(crate.get("repository", ""))
-        except Exception:
-            pass
-
-        license_expr = ""
-        try:
-            version_data = _cratesio_get(
-                f"https://crates.io/api/v1/crates/{candidate}/{version}"
+            meta["description"] = (crate.get("description") or "").strip()
+            meta["supplier"] = _extract_supplier(crate.get("repository", ""))
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            print(
+                f"WARNING: Metadata request failed for {candidate}: {exc}",
+                file=sys.stderr,
             )
-            license_expr = _normalize_license_expression(
-                (version_data.get("version", {}).get("license") or "").strip()
-            )
-        except Exception:
-            pass
-
-        if desc or supplier or license_expr:
-            return name, {
-                "description": desc,
-                "supplier": supplier,
-                "license": license_expr,
-            }
-    return name, {}
+        if meta["description"] or meta["supplier"] or meta["license"]:
+            break
+    return name, meta
 
 
 def fetch_crate_metadata_from_cratesio(
     crate_versions: list[tuple[str, str]],
+    license_lookups: set[tuple[str, str]] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Fetch metadata (description, supplier, license) from crates.io API (parallel).
 
@@ -397,7 +546,12 @@ def fetch_crate_metadata_from_cratesio(
     done = 0
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {
-            pool.submit(_fetch_one_crate_meta, name, version): f"{name}@{version}"
+            pool.submit(
+                _fetch_one_crate_meta,
+                name,
+                version,
+                license_lookups is None or (name, version) in license_lookups,
+            ): f"{name}@{version}"
             for name, version in crate_versions
         }
         for future in as_completed(futures):
@@ -423,22 +577,25 @@ def generate_cache(
     module_lock_paths: list[str] | None = None,
     use_dash_license_scan: bool = False,
     verbose: bool = False,
+    deps_path: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Generate metadata cache from lockfiles and registry metadata.
+    """Collect direct manifest licenses, with an exact-version registry fallback.
 
     1. Parse Cargo.lock and/or MODULE.bazel.lock files for crate names, versions, checksums
-    2. Optionally run dash-license-scan for license data
+    2. Read available crate manifests, optionally use dash-license-scan
     3. Fetch descriptions, suppliers, and license fallback from crates.io (parallel)
     4. Combine version/checksum from lockfile with metadata
 
     Args:
         cargo_lock_path: Optional path to Cargo.lock file
         module_lock_paths: Optional list of paths to MODULE.bazel.lock files
+        deps_path: Bazel dependency data with repository-to-manifest paths
 
     Returns:
-        Dict mapping name@version to metadata
+        Metadata keyed by Bazel repository, or name@version for standalone lockfiles
     """
     crates: dict[str, dict[str, Any]] = {}
+    repositories: dict[str, dict[str, Any]] = {}
 
     if cargo_lock_path:
         print(f"Parsing {cargo_lock_path}...")
@@ -449,17 +606,40 @@ def generate_cache(
     for module_lock_path in module_lock_paths or []:
         print(f"Parsing {module_lock_path}...")
         module_crates = parse_module_bazel_lock(module_lock_path)
+        for info in module_crates.values():
+            repo = info["repository"]
+            if repo in repositories and repositories[repo] != info:
+                raise ValueError(f"Conflicting crate sources for {repo}")
+            repositories[repo] = info
         added = 0
-        for name, info in module_crates.items():
-            if name not in crates:
-                crates[name] = info
+        for info in module_crates.values():
+            key = f"{info['name']}@{info['version']}"
+            if key not in crates:
+                crates[key] = info
                 added += 1
         print(f"Found {len(module_crates)} crates in {module_lock_path} ({added} new)")
 
+    if deps_path:
+        cargo_packages = None
+        if cargo_lock_path and not module_lock_paths:
+            with open(cargo_lock_path, "rb") as f:
+                cargo_packages = tomllib.load(f).get("package", [])
+        crates = select_build_crates(repositories, deps_path, cargo_packages)
+
     if not crates:
-        print("No crates found in lockfiles.")
+        print("No selected crates found.")
         return {}
 
+    local_licenses = {key: read_manifest_license(info) for key, info in crates.items()}
+    registry_crates = {
+        key: info
+        for key, info in crates.items()
+        if info["source"]
+        in (
+            "registry+https://github.com/rust-lang/crates.io-index",
+            "sparse+https://index.crates.io/",
+        )
+    }
     license_map: dict[str, str] = {}
     if use_dash_license_scan:
         # Generate synthetic Cargo.lock containing only crates.io crates.
@@ -467,8 +647,8 @@ def generate_cache(
         # (git dependencies, path dependencies) that may be in a real Cargo.lock.
         temp_dir = tempfile.mkdtemp(prefix="sbom_dash_")
         synthetic_path = os.path.join(temp_dir, "Cargo.lock")
-        generate_synthetic_cargo_lock(crates, synthetic_path)
-        print(f"Generated synthetic Cargo.lock with {len(crates)} crates")
+        generate_synthetic_cargo_lock(registry_crates, synthetic_path)
+        print(f"Generated synthetic Cargo.lock with {len(registry_crates)} crates")
 
         summary_path = os.path.join(temp_dir, "dash_summary.txt")
 
@@ -480,23 +660,52 @@ def generate_cache(
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # Fetch descriptions + suppliers from crates.io (parallel, ~10 concurrent requests)
+    # Description/supplier collection still uses the API. License requests are fallback only.
+    license_lookups = {
+        (info["name"], info["version"])
+        for key, info in registry_crates.items()
+        if not local_licenses[key][0]
+        and f"{info['name']}@{info['version']}" not in license_map
+    }
     cratesio_meta = fetch_crate_metadata_from_cratesio(
-        [(info["name"], info["version"]) for info in crates.values()]
+        sorted({(info["name"], info["version"]) for info in crates.values()}),
+        license_lookups=license_lookups,
     )
 
     # Build final cache
     cache: dict[str, dict[str, Any]] = {}
     for key, info in crates.items():
-        meta = cratesio_meta.get(key, {})
+        identity = f"{info['name']}@{info['version']}"
+        meta = cratesio_meta.get(identity, {})
+        license_expr, reason = local_licenses[key]
+        license_source = info.get("manifest", "") if license_expr else ""
+        if not license_expr and key in registry_crates:
+            license_expr = license_map.get(identity, meta.get("license", ""))
+            license_source = (
+                "dash-license-scan"
+                if identity in license_map
+                else meta.get("license_source", "")
+            )
+            reason += "; " + meta.get(
+                "license_error", "API response has no license expression"
+            )
+        elif not license_expr:
+            reason += "; API license fallback requires a confirmed crates.io source"
         cache[key] = {
+            "name": info["name"],
             "version": info["version"],
             "checksum": info["checksum"],
             "purl": f"pkg:cargo/{info['name']}@{info['version']}",
-            "license": license_map.get(key, meta.get("license", "")),
+            "license": license_expr,
+            "license_source": license_source,
             "description": meta.get("description", ""),
             "supplier": meta.get("supplier", ""),
         }
+        if info.get("repository"):
+            cache[key]["bazel_repository"] = info["repository"]
+        if not license_expr:
+            cache[key]["license_error"] = reason
+            print(f"WARNING: License unresolved for {key}: {reason}", file=sys.stderr)
 
     return cache
 
@@ -512,6 +721,9 @@ def main():
         help="Output JSON file (default: crates_metadata.json)",
     )
     parser.add_argument("--cargo-lock", help="Path to Cargo.lock file")
+    parser.add_argument(
+        "--deps-json", help="Bazel dependency data with crate manifest paths"
+    )
     parser.add_argument(
         "--module-lock",
         action="append",
@@ -535,8 +747,10 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.cargo_lock and not args.module_lock:
-        parser.error("At least one of --cargo-lock or --module-lock is required")
+    if not args.cargo_lock and not args.module_lock and not args.deps_json:
+        parser.error(
+            "At least one of --cargo-lock, --module-lock or --deps-json is required"
+        )
 
     # Generate new cache
     cache = generate_cache(
@@ -544,6 +758,7 @@ def main():
         module_lock_paths=args.module_lock,
         use_dash_license_scan=args.use_dash_license_scan,
         verbose=args.verbose,
+        deps_path=args.deps_json,
     )
 
     # Merge with existing cache if requested

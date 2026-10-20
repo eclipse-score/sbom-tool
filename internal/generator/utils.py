@@ -11,9 +11,49 @@
 # SPDX-License-Identifier: Apache-2.0
 # *******************************************************************************
 
-"""Shared utilities for SBOM formatters."""
+"""Shared utilities for SBOM generation."""
 
+import hashlib
+import json
 import re
+from collections import Counter
+from typing import Any
+
+
+def component_identity(component: dict[str, Any]) -> tuple[str, str, str]:
+    """Keep packages from different ecosystems separate."""
+    purl = component.get("purl") or ""
+    ecosystem = (
+        purl[4:].split("/", 1)[0]
+        if purl.startswith("pkg:")
+        else {
+            "crates.io": "cargo",
+            "pypi": "pypi",
+        }.get((component.get("source") or "").lower(), "")
+    )
+    return (
+        component.get("name", "unknown"),
+        component.get("version", "unknown"),
+        ecosystem,
+    )
+
+
+def distinct_component_ids(
+    ids: dict[tuple[str, str, str], str], reserved: set[str]
+) -> dict[tuple[str, str, str], str]:
+    """Keep existing IDs unless they collide; use stable suffixes for collisions."""
+    counts = Counter(ids.values())
+    used = set(ids.values()) | reserved
+    result = dict(ids)
+    for key, identifier in sorted(ids.items()):
+        if counts[identifier] > 1 or identifier in reserved:
+            suffix = hashlib.sha256(json.dumps(key).encode()).hexdigest()[:12]
+            candidate = identifier + "-" + suffix
+            while candidate in used:
+                candidate += "-" + suffix
+            used.add(candidate)
+            result[key] = candidate
+    return result
 
 
 def _normalize_spdx_license(expr: str) -> str:

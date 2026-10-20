@@ -28,6 +28,7 @@ py_binary(
         ":cyclonedx_formatter",
         ":registry_metadata",
         ":spdx_formatter",
+        ":utils",
     ],
 )
 
@@ -38,6 +39,7 @@ py_library(
         ":cyclonedx_formatter",
         ":registry_metadata",
         ":spdx_formatter",
+        ":utils",
     ],
 )
 

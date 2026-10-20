@@ -27,6 +27,7 @@ SbomDepsInfo = provider(
         "transitive_deps": "depset of all transitive dependency labels",
         "external_repos": "depset of external repository names used",
         "external_dep_edges": "depset of external repo dependency edges (from::to)",
+        "crate_manifests": "depset of crate Cargo.toml files",
     },
 )
 

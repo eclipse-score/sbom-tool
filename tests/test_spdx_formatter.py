@@ -140,6 +140,8 @@ class TestSpdxFormatter(unittest.TestCase):
             {"name": "shlex", "version": "1.3.0"},
             {"name": "shlex", "version": "2.0.1"},
         ]
+        for component in components:
+            component["purl"] = f"pkg:cargo/{component['name']}@{component['version']}"
         repositories = {
             f"crate_index__{c['name']}-{c['version']}": c for c in components
         }
@@ -151,7 +153,7 @@ class TestSpdxFormatter(unittest.TestCase):
             with self.subTest(retained_versions=[c["version"] for c in retained]):
                 spdx = generate_spdx(
                     retained,
-                    self.config,
+                    {**self.config, "component_name": "shlex"},
                     self.timestamp,
                     external_dep_edges=edges,
                     repository_components=repositories,

@@ -23,7 +23,11 @@ import re
 import uuid
 from typing import Any
 
-from internal.generator.utils import _normalize_spdx_license
+from internal.generator.utils import (
+    _normalize_spdx_license,
+    component_identity,
+    distinct_component_ids,
+)
 
 
 def generate_cyclonedx(
@@ -126,37 +130,45 @@ def generate_cyclonedx(
 
     # Add components
     dependency_refs = []
-    component_refs = {}
-    for comp in components:
-        cdx_component = _create_cdx_component(comp)
+    cdx_components = [_create_cdx_component(comp) for comp in components]
+    component_refs = distinct_component_ids(
+        {
+            component_identity(comp): entry["bom-ref"]
+            for comp, entry in zip(components, cdx_components)
+        },
+        {root_bom_ref},
+    )
+    for comp, cdx_component in zip(components, cdx_components):
+        cdx_component["bom-ref"] = component_refs[component_identity(comp)]
         cdx_doc["components"].append(cdx_component)
         dependency_refs.append(cdx_component["bom-ref"])
-        component_refs[
-            (comp.get("name", "unknown"), comp.get("version", "unknown"))
-        ] = cdx_component["bom-ref"]
 
     if repository_components is not None:
         repository_refs = {
-            repo.rstrip("+"): (
+            repo.rstrip("+"): component_refs.get(
+                component_identity(comp),
                 root_bom_ref
                 if comp.get("name") == component_name
-                else component_refs.get(
-                    (comp.get("name", "unknown"), comp.get("version", "unknown"))
-                )
+                and component_identity(comp)[2] not in ("cargo", "pypi")
+                else None,
             )
             for repo, comp in repository_components.items()
         }
     else:
-        # Direct formatter callers can use names only when the version is unambiguous.
+        # Direct formatter callers can use names only when they identify one package.
         refs_by_name: dict[str, set[str]] = {}
-        for (name, _version), ref in component_refs.items():
+        for (name, _version, _ecosystem), ref in component_refs.items():
             refs_by_name.setdefault(name.rstrip("+"), set()).add(ref)
         repository_refs = {
             name: next(iter(refs))
             for name, refs in refs_by_name.items()
             if len(refs) == 1
         }
-        repository_refs[component_name.rstrip("+")] = root_bom_ref
+        root_name = component_name.rstrip("+")
+        if root_name in refs_by_name:
+            repository_refs.pop(root_name, None)
+        else:
+            repository_refs[root_name] = root_bom_ref
 
     # Build dependency graph
     depends_map: dict[str, set[str]] = {}

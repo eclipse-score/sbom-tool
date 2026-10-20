@@ -36,6 +36,10 @@ def _sbom_impl(ctx):
         target[SbomDepsInfo].external_repos
         for target in ctx.attr.targets
     ])
+    crate_manifests = depset(transitive = [
+        target[SbomDepsInfo].crate_manifests
+        for target in ctx.attr.targets
+    ]).to_list()
 
     # Collect all transitive deps
     all_transitive_deps = depset(transitive = [
@@ -81,6 +85,7 @@ def _sbom_impl(ctx):
 
     deps_data = {
         "external_repos": all_external_repos.to_list(),
+        "crate_manifests": {f.owner.workspace_name: f.path for f in crate_manifests},
         "transitive_deps": [str(d) for d in all_transitive_deps.to_list()],
         "external_dep_edges": all_external_dep_edges.to_list(),
         "target_labels": target_labels,
@@ -153,13 +158,14 @@ def _sbom_impl(ctx):
     # usage bazel build --define=score_sbom_verbose=true //:sbom
     is_verbose = ctx.var.get("score_sbom_verbose", "false").lower() in ("true", "1", "yes")
 
-    # Auto-generate crates metadata cache if enabled and a lockfile is provided
+    # Collect crate licenses from declared manifests, with registry fallback.
     crates_cache = None
-    if (ctx.file.cargo_lockfile or ctx.files.module_lockfiles) and ctx.attr.auto_crates_cache:
+    if (crate_manifests or ctx.file.cargo_lockfile or ctx.files.module_lockfiles) and ctx.attr.auto_crates_cache:
         crates_cache = ctx.actions.declare_file(ctx.attr.name + "_crates_metadata.json")
-        cache_inputs = []
+        cache_inputs = [deps_json] + crate_manifests
         cache_args = ctx.actions.args()
         cache_args.add(crates_cache)
+        cache_args.add("--deps-json", deps_json)
         if is_verbose:
             cache_args.add("--verbose")
         if ctx.file.cargo_lockfile:
@@ -381,7 +387,7 @@ sbom_rule = rule(
         ),
         "auto_crates_cache": attr.bool(
             default = True,
-            doc = "Automatically build crates metadata cache when cargo_lockfile or module_lockfile is provided",
+            doc = "Collect crate metadata when manifests or lockfiles are available",
         ),
         "_crates_cache_script": attr.label(
             default = "//scripts:generate_crates_metadata_cache_bin",

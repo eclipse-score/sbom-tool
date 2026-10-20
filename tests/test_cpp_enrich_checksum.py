@@ -59,6 +59,20 @@ class TestCppEnrichChecksumPropagation(unittest.TestCase):
     def _run(self, components, cpp_components):
         return enrich_components_from_cpp_cache(components, cpp_components, {})
 
+    def test_cpp_metadata_does_not_fill_python_or_rust_packages(self):
+        components = [
+            {
+                "name": "shlex",
+                "version": "1.3.0",
+                "purl": f"pkg:{ecosystem}/shlex@1.3.0",
+            }
+            for ecosystem in ("pypi", "cargo")
+        ]
+        expected = [dict(component) for component in components]
+        cpp_cache = [{"name": "shlex", "license": "MIT", "checksum": "a" * 64}]
+
+        self.assertEqual(self._run(components, cpp_cache), expected)
+
     def test_checksum_propagated_when_component_has_none(self):
         """SHA-256 from the cdxgen-generated cache is copied to a component with no checksum."""
         sha = "a22461d13119ac5c78f205d3df1db13403e58ce1bb1794edc9313677313f4a9d"

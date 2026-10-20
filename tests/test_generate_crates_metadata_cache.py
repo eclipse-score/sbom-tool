@@ -48,13 +48,18 @@ Run          : bazel test //sbom/tests:test_generate_crates_metadata_cache
 """
 
 import json
+import io
+import http.client
 import os
 import tempfile
 import unittest
+import urllib.error
+from pathlib import Path
 from unittest import mock
 
 from scripts.generate_crates_metadata_cache import (
     _fetch_one_crate_meta,
+    _cratesio_get,
     _normalize_license_expression,
     generate_cache,
     generate_synthetic_cargo_lock,
@@ -219,9 +224,16 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 2)
-        self.assertEqual(result["serde@1.0.228"]["version"], "1.0.228")
-        self.assertEqual(result["serde@1.0.228"]["checksum"], "abc123def456")
-        self.assertEqual(result["tokio@1.10.0"]["version"], "1.10.0")
+        self.assertEqual(
+            result["rules_rust++crate+crate_index__serde-1.0.228"]["version"], "1.0.228"
+        )
+        self.assertEqual(
+            result["rules_rust++crate+crate_index__serde-1.0.228"]["checksum"],
+            "abc123def456",
+        )
+        self.assertEqual(
+            result["rules_rust++crate+crate_index__tokio-1.10.0"]["version"], "1.10.0"
+        )
 
     def test_crate_index_meta_repo_skipped(self):
         """The crate_index meta-repo entry is not treated as a crate."""
@@ -243,7 +255,7 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("serde@1.0.228", result)
+        self.assertEqual(next(iter(result.values()))["name"], "serde")
 
     def test_complex_crate_name(self):
         """Crate names with multiple hyphens (e.g. iceoryx2-qnx8) are parsed correctly."""
@@ -264,8 +276,9 @@ class TestParseModuleBazelLock(unittest.TestCase):
         result = parse_module_bazel_lock(path)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("iceoryx2-bb-lock-free-qnx8@0.7.0", result)
-        self.assertEqual(result["iceoryx2-bb-lock-free-qnx8@0.7.0"]["version"], "0.7.0")
+        entry = next(iter(result.values()))
+        self.assertEqual(entry["name"], "iceoryx2-bb-lock-free-qnx8")
+        self.assertEqual(entry["version"], "0.7.0")
 
     def test_no_crate_extension(self):
         """Lockfile without crate extension returns empty dict."""
@@ -338,7 +351,14 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         """
         specs = {}
         for name, version, sha256 in crates:
-            specs[f"crate_index__{name}-{version}"] = {"attributes": {"sha256": sha256}}
+            specs[f"crate_index__{name}-{version}"] = {
+                "attributes": {
+                    "sha256": sha256,
+                    "urls": [
+                        f"https://static.crates.io/crates/{name}/{version}/download"
+                    ],
+                }
+            }
 
         lockfile = {
             "moduleExtensions": {
@@ -474,6 +494,406 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
 
         name, meta = _fetch_one_crate_meta("relicensed", "1.0.0")
         self.assertEqual(meta["license"], "MIT")
+
+
+class TestManifestLicenses(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        patcher = mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")
+        self.get = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.get.side_effect = lambda url: (
+            {"version": {"license": "BSD-3-Clause"}}
+            if url.endswith(("/1.3.0", "/2.0.1"))
+            else {"crate": {"description": "A crate"}}
+        )
+
+    def collect(self, manifests, registry=True, hub="crate_index", edge_only=False):
+        specs, repos, files = {}, [], {}
+        for (name, version), content in manifests.items():
+            repo_suffix = f"{hub}__{name}-{version}".replace("+", "-")
+            repo = f"rules_rust++crate+{repo_suffix}"
+            repos.append(repo)
+            attrs = {"sha256": "a" * 64}
+            attrs.update(
+                {
+                    "urls": [
+                        f"https://static.crates.io/crates/{name}/{version}/download"
+                    ],
+                    "strip_prefix": f"{name}-{version}",
+                }
+                if registry
+                else {"remote": "https://example.org/fork.git"}
+            )
+            specs[repo_suffix] = {"attributes": attrs}
+            if content is not None:
+                path = self.root / f"{name}-{version}.toml"
+                path.write_text(content)
+                files[repo] = str(path)
+        lock = self.root / "MODULE.bazel.lock"
+        lock.write_text(
+            json.dumps(
+                {
+                    "moduleExtensions": {
+                        "@@rules_rust+//crate_universe:extensions.bzl%crate": {
+                            "general": {"generatedRepoSpecs": specs}
+                        }
+                    }
+                }
+            )
+        )
+        deps = self.root / "deps.json"
+        deps.write_text(
+            json.dumps(
+                {
+                    "external_repos": [] if edge_only else repos,
+                    "crate_manifests": files,
+                    "external_dep_edges": [f"app+::{repo}+" for repo in repos]
+                    + ["invalid", "app+::"]
+                    if edge_only
+                    else [],
+                }
+            )
+        )
+        return generate_cache(module_lock_paths=[str(lock)], deps_path=str(deps))
+
+    def test_edge_destinations_collect_and_validate_crate_metadata(self):
+        manifest = '[package]\nname="shlex"\nversion="1.3.0"\nlicense="MIT"'
+        for content in (manifest, None):
+            with self.subTest(content=content):
+                cache = self.collect({("shlex", "1.3.0"): content}, edge_only=True)
+                repo = "rules_rust++crate+crate_index__shlex-1.3.0"
+                self.assertEqual(set(cache), {"repo:" + repo})
+                entry = cache["repo:" + repo]
+                self.assertEqual(entry["checksum"], "a" * 64)
+                self.assertEqual(entry["license"], "MIT" if content else "BSD-3-Clause")
+        self.get.reset_mock()
+        with self.assertRaisesRegex(ValueError, "Manifest identity mismatch"):
+            self.collect(
+                {("shlex", "1.3.0"): manifest.replace("1.3.0", "2.0.1")}, edge_only=True
+            )
+        self.get.assert_not_called()
+
+    def test_named_hubs_preserve_package_identity_and_source(self):
+        manifest = '[package]\nname="anstream"\nversion="1.0.0"\nlicense="MIT"'
+        self.get.side_effect = lambda url: {"version": {"license": "Apache-2.0"}}
+        for hub in ("crates", "score_crates", "custom_hub"):
+            for content in (manifest, None):
+                with self.subTest(hub=hub, content=content):
+                    self.get.reset_mock()
+                    cache = self.collect({("anstream", "1.0.0"): content}, hub=hub)
+                    entry = cache[f"repo:rules_rust++crate+{hub}__anstream-1.0.0"]
+                    self.assertEqual(entry["name"], "anstream")
+                    self.assertEqual(entry["version"], "1.0.0")
+                    self.assertEqual(entry["checksum"], "a" * 64)
+                    self.assertEqual(
+                        entry["license"], "MIT" if content else "Apache-2.0"
+                    )
+                    if not content:
+                        self.get.assert_any_call(
+                            "https://crates.io/api/v1/crates/anstream/1.0.0"
+                        )
+
+    def test_same_package_in_two_hubs_keeps_each_source(self):
+        self.collect({("shlex", "1.3.0"): None})
+        lock = self.root / "MODULE.bazel.lock"
+        data = json.loads(lock.read_text())
+        extension = next(iter(data["moduleExtensions"].values()))["general"]
+        specs = extension["generatedRepoSpecs"]
+        specs["custom_hub__shlex-1.3.0"] = {
+            "attributes": {
+                "sha256": "b" * 64,
+                "urls": ["https://example.org/fork.tar.gz"],
+            }
+        }
+        first = "rules_rust++crate+crate_index__shlex-1.3.0"
+        second = "rules_rust++crate+custom_hub__shlex-1.3.0"
+        deps = self.root / "deps.json"
+        deps.write_text(json.dumps({"external_repos": [first, second]}))
+        for entries in (list(specs.items()), list(reversed(specs.items()))):
+            with self.subTest(order=[key for key, _ in entries]):
+                extension["generatedRepoSpecs"] = dict(entries)
+                lock.write_text(json.dumps(data))
+                self.get.reset_mock()
+                cache = generate_cache(
+                    module_lock_paths=[str(lock)], deps_path=str(deps)
+                )
+                self.assertEqual(cache["repo:" + first]["checksum"], "a" * 64)
+                self.assertEqual(cache["repo:" + first]["license"], "BSD-3-Clause")
+                self.assertEqual(cache["repo:" + second]["checksum"], "b" * 64)
+                self.assertEqual(cache["repo:" + second]["license"], "")
+                self.assertIn(
+                    "confirmed crates.io source",
+                    cache["repo:" + second]["license_error"],
+                )
+                self.get.assert_any_call("https://crates.io/api/v1/crates/shlex/1.3.0")
+
+    def test_local_versions_take_precedence_without_license_requests(self):
+        licenses = {"1.3.0": "MIT", "2.0.1": "Apache-2.0"}
+        cache = self.collect(
+            {
+                (
+                    "shlex",
+                    version,
+                ): f'[package]\nname="shlex"\nversion="{version}"\nlicense="{license}"'
+                for version, license in licenses.items()
+            }
+        )
+        for version, license in licenses.items():
+            entry = cache[f"repo:rules_rust++crate+crate_index__shlex-{version}"]
+            self.assertEqual(entry["license"], license)
+            self.assertTrue(entry["license_source"].endswith(f"shlex-{version}.toml"))
+        self.assertEqual(
+            self.get.call_args_list,
+            [mock.call("https://crates.io/api/v1/crates/shlex")] * 2,
+        )
+
+    def test_normalized_version_uses_exact_manifest_and_api_identity(self):
+        version = "0.11.1+wasi-snapshot-preview1"
+        manifest = f'[package]\nname="wasi"\nversion="{version}"\nlicense="MIT"'
+        self.get.side_effect = lambda url: {"version": {"license": "Apache-2.0"}}
+        for registry, content in ((True, manifest), (True, None), (False, manifest)):
+            with self.subTest(registry=registry, content=content):
+                self.get.reset_mock()
+                entry = next(
+                    iter(self.collect({("wasi", version): content}, registry).values())
+                )
+                self.assertEqual(entry["version"], version)
+                self.assertEqual(entry["purl"], f"pkg:cargo/wasi@{version}")
+                self.assertEqual(entry["license"], "MIT" if content else "Apache-2.0")
+                calls = [c.args[0] for c in self.get.call_args_list]
+                self.assertEqual(
+                    f"https://crates.io/api/v1/crates/wasi/{version}" in calls,
+                    content is None,
+                )
+
+    def test_exact_archive_version_does_not_accept_a_different_prerelease(self):
+        with self.assertRaisesRegex(ValueError, "Manifest identity mismatch"):
+            self.collect(
+                {
+                    (
+                        "wasi",
+                        "0.11.1+wasi-snapshot-preview1",
+                    ): '[package]\nname="wasi"\nversion="0.11.1-wasi-snapshot-preview1"\nlicense="MIT"'
+                }
+            )
+        self.get.assert_not_called()
+
+    def test_cargo_lock_only_preserves_selected_legacy_and_modern_crates(self):
+        cargo = self.root / "Cargo.lock"
+        cargo.write_text("""[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "archive-hash"
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "other-hash"
+""")
+        for prefix in (
+            "rules_rust++crate+crate_index__",
+            "crates_io__",
+            "score_crates__",
+        ):
+            with self.subTest(prefix=prefix):
+                repo = prefix + "shlex-1.3.0"
+                deps = self.root / "deps.json"
+                deps.write_text(json.dumps({"external_repos": [repo]}))
+                cache = generate_cache(cargo_lock_path=str(cargo), deps_path=str(deps))
+                self.assertEqual(set(cache), {"repo:" + repo})
+                self.assertEqual(cache["repo:" + repo]["checksum"], "archive-hash")
+                self.assertEqual(cache["repo:" + repo]["license"], "BSD-3-Clause")
+
+        # A second source for the same name/version is not a unique association.
+        cargo.write_text(
+            cargo.read_text()
+            + """[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "git+https://example.org/fork.git#abc"
+"""
+        )
+        self.get.reset_mock()
+        entry = next(
+            iter(
+                generate_cache(cargo_lock_path=str(cargo), deps_path=str(deps)).values()
+            )
+        )
+        self.assertEqual(entry["checksum"], "")
+        self.assertEqual(entry["license"], "")
+        self.assertNotIn(
+            mock.call("https://crates.io/api/v1/crates/shlex/1.3.0"),
+            self.get.call_args_list,
+        )
+
+    def test_module_git_source_is_not_replaced_by_cargo_registry_entry(self):
+        self.collect({("shlex", "1.3.0"): None}, registry=False)
+        cargo = self.root / "Cargo.lock"
+        cargo.write_text("""[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "registry-hash"
+""")
+        self.get.reset_mock()
+        cache = generate_cache(
+            cargo_lock_path=str(cargo),
+            module_lock_paths=[str(self.root / "MODULE.bazel.lock")],
+            deps_path=str(self.root / "deps.json"),
+        )
+        entry = next(iter(cache.values()))
+        self.assertEqual(entry["license"], "")
+        self.assertNotEqual(entry["checksum"], "registry-hash")
+        self.assertNotIn(
+            mock.call("https://crates.io/api/v1/crates/shlex/1.3.0"),
+            self.get.call_args_list,
+        )
+
+    def test_missing_and_unsupported_declarations_fall_back(self):
+        manifest = '[package]\nname="shlex"\nversion="1.3.0"\n'
+        for content in (
+            None,
+            manifest,
+            manifest + "license.workspace=true",
+            manifest + 'license-file="LICENSE"',
+        ):
+            with self.subTest(content=content):
+                self.get.reset_mock()
+                entry = next(iter(self.collect({("shlex", "1.3.0"): content}).values()))
+                self.assertEqual(entry["license"], "BSD-3-Clause")
+                self.assertEqual(
+                    entry["license_source"],
+                    "https://crates.io/api/v1/crates/shlex/1.3.0",
+                )
+                self.get.assert_any_call(entry["license_source"])
+
+    def test_api_failure_and_empty_response_have_distinct_reasons(self):
+        manifest = '[package]\nname="shlex"\nversion="1.3.0"\nlicense.workspace=true'
+        for response, failure, reason in (
+            ({"version": {"license": None}}, None, "API response has no license"),
+            (None, urllib.error.URLError("offline"), "API request failed"),
+        ):
+            with self.subTest(reason=reason):
+                self.get.side_effect = failure
+                self.get.return_value = response
+                with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    entry = next(
+                        iter(self.collect({("shlex", "1.3.0"): manifest}).values())
+                    )
+                self.assertEqual(entry["license"], "")
+                self.assertIn("Workspace license inheritance", entry["license_error"])
+                self.assertIn(reason, entry["license_error"])
+                self.assertIn(reason, stderr.getvalue())
+
+    def test_fork_never_receives_registry_license(self):
+        for name in ("shlex", "shlex-qnx8"):
+            with self.subTest(name=name):
+                self.get.reset_mock()
+                entry = next(
+                    iter(self.collect({(name, "1.3.0"): None}, registry=False).values())
+                )
+                self.assertEqual(entry["license"], "")
+                self.assertIn("confirmed crates.io source", entry["license_error"])
+                self.assertFalse(
+                    any(c.args[0].endswith("/1.3.0") for c in self.get.call_args_list)
+                )
+
+    def test_identity_mismatch_fails_before_api_lookup(self):
+        for name, version in (("another-crate", "1.3.0"), ("shlex", "2.0.1")):
+            with self.subTest(name=name, version=version):
+                content = (
+                    f'[package]\nname="{name}"\nversion="{version}"\nlicense="MIT"'
+                )
+                with self.assertRaisesRegex(ValueError, "Manifest identity mismatch"):
+                    self.collect({("shlex", "1.3.0"): content})
+        self.get.assert_not_called()
+
+    def test_other_metadata_failure_preserves_local_license(self):
+        self.get.side_effect = urllib.error.URLError("offline")
+        entry = next(
+            iter(
+                self.collect(
+                    {
+                        (
+                            "shlex",
+                            "1.3.0",
+                        ): '[package]\nname="shlex"\nversion="1.3.0"\nlicense="MIT"'
+                    }
+                ).values()
+            )
+        )
+        self.assertEqual(entry["license"], "MIT")
+        self.assertNotIn("license_error", entry)
+
+    @mock.patch("scripts.generate_crates_metadata_cache.time.sleep")
+    @mock.patch("scripts.generate_crates_metadata_cache.urllib.request.urlopen")
+    def test_response_read_failure_does_not_discard_local_licenses(
+        self, urlopen, _sleep
+    ):
+        self.get.side_effect = _cratesio_get
+        response = urlopen.return_value.__enter__.return_value
+        for error in (
+            http.client.IncompleteRead(b"partial", 10),
+            ConnectionResetError("reset"),
+        ):
+            response.read.side_effect = error
+            for content in (
+                '[package]\nname="shlex"\nversion="1.3.0"\nlicense="MIT"',
+                None,
+            ):
+                with self.subTest(error=error, content=content):
+                    urlopen.reset_mock()
+                    entry = next(
+                        iter(self.collect({("shlex", "1.3.0"): content}).values())
+                    )
+                    self.assertEqual(urlopen.call_count, 3 if content else 6)
+                    self.assertEqual(entry["license"], "MIT" if content else "")
+                    if not content:
+                        self.assertIn(str(error), entry["license_error"])
+
+
+class TestCratesIoRequests(unittest.TestCase):
+    @mock.patch("scripts.generate_crates_metadata_cache.time.sleep")
+    @mock.patch("scripts.generate_crates_metadata_cache.urllib.request.urlopen")
+    def test_response_read_failure_is_retried(self, urlopen, _sleep):
+        response = urlopen.return_value.__enter__.return_value
+        for error in (
+            http.client.IncompleteRead(b"partial", 10),
+            ConnectionResetError("reset"),
+        ):
+            with self.subTest(error=error):
+                urlopen.reset_mock()
+                response.read.side_effect = [error, b"{}"]
+                self.assertEqual(
+                    _cratesio_get("https://crates.io/api/v1/crates/shlex"), {}
+                )
+                self.assertEqual(urlopen.call_count, 2)
+
+    @mock.patch("scripts.generate_crates_metadata_cache.time.sleep")
+    @mock.patch(
+        "scripts.generate_crates_metadata_cache.time.monotonic", return_value=100.0
+    )
+    @mock.patch("scripts.generate_crates_metadata_cache.urllib.request.urlopen")
+    def test_rate_limit_and_bounded_retries(self, urlopen, _clock, sleep):
+        module = "scripts.generate_crates_metadata_cache"
+        with mock.patch(module + "._last_request", 100.0):
+            urlopen.side_effect = [urllib.error.URLError("offline"), io.BytesIO(b"{}")]
+            self.assertEqual(_cratesio_get("https://crates.io/api/v1/crates/shlex"), {})
+            self.assertEqual(urlopen.call_count, 2)
+            self.assertIn(mock.call(1.0), sleep.call_args_list)
+            for status, attempts in ((404, 1), (429, 3), (503, 3)):
+                with self.subTest(status=status):
+                    urlopen.reset_mock()
+                    urlopen.side_effect = urllib.error.HTTPError(
+                        "url", status, "error", {}, None
+                    )
+                    with self.assertRaises(urllib.error.HTTPError):
+                        _cratesio_get("https://crates.io/api/v1/crates/shlex")
+                    self.assertEqual(urlopen.call_count, attempts)
 
 
 class TestEndToEndLicenseExtraction(unittest.TestCase):

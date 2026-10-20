@@ -31,6 +31,7 @@ from typing import Any
 from internal.generator.spdx_formatter import generate_spdx
 from internal.generator.cyclonedx_formatter import generate_cyclonedx
 from internal.generator.registry_metadata import archive_metadata
+from internal.generator.utils import component_identity
 
 
 def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]:
@@ -391,6 +392,8 @@ def enrich_components_from_cpp_cache(
         cpp_by_name[cc["name"].lower()] = cc
 
     for comp in components:
+        if component_identity(comp)[2] in ("cargo", "pypi"):
+            continue
         comp_name = comp.get("name", "")
         norm_name = normalize_name(comp_name)
 
@@ -656,7 +659,7 @@ def main() -> int:
             components.append(component)
             repository_components[repo.rstrip("+")] = component
 
-    # Deduplicate components by name and version
+    # Deduplicate components by name, version and ecosystem.
     components = deduplicate_components(components)
 
     # Ensure components exist for all dependency edge destinations.
@@ -710,7 +713,12 @@ def main() -> int:
     # Filter out the main component from the dependency list to avoid self-dependency
     # (e.g., sbom for score_kyron should not list score_kyron as its own dependency)
     if component_name:
-        components = [c for c in components if c.get("name") != component_name]
+        components = [
+            c
+            for c in components
+            if c.get("name") != component_name
+            or component_identity(c)[2] in ("cargo", "pypi")
+        ]
 
     # Generate outputs
     if args.spdx_output:
@@ -754,7 +762,12 @@ def filter_repos(repos: list[str], exclude_patterns: list[str]) -> list[str]:
     filtered = []
     for repo in repos:
         # Always keep crates from crate_universe - these are real dependencies
-        if "crate_index__" in repo or "crates_io__" in repo or "_crates__" in repo:
+        if (
+            "crate_index__" in repo
+            or "crates_io__" in repo
+            or "_crates__" in repo
+            or "crate+" in repo
+        ):
             filtered.append(repo)
             continue
 
@@ -769,9 +782,33 @@ def filter_repos(repos: list[str], exclude_patterns: list[str]) -> list[str]:
 
 
 def _get_crate_metadata(
-    crates: dict[str, Any], name: str, version: str | None = None
+    crates: dict[str, Any],
+    name: str,
+    version: str | None = None,
+    repository: str | None = None,
 ) -> dict[str, Any]:
     """Match crate metadata by name and version, including older cache files."""
+    repo_meta = crates.get("repo:" + repository, {}) if repository else {}
+    if repo_meta:
+        exact_version = repo_meta.get("version", version)
+        if version is not None and exact_version.replace("+", "-") == version.replace(
+            "+", "-"
+        ):
+            base = dict(_get_crate_metadata(crates, name, exact_version))
+            for key in (name, name.replace("-", "_")):
+                manual = crates.get(key, {})
+                if manual.get("version") == exact_version:
+                    for field in (
+                        "cpe",
+                        "aliases",
+                        "pedigree_ancestors",
+                        "pedigree_descendants",
+                        "pedigree_variants",
+                        "pedigree_notes",
+                    ):
+                        if field in manual:
+                            base[field] = manual[field]
+            return {**base, **repo_meta}
     names = (name, name.replace("-", "_"))
     if version is not None:
         for key in [f"{n}@{version}" for n in names] + list(names):
@@ -808,6 +845,7 @@ def _build_crate_result(
     crate_name: str,
     version: str,
     crate_meta: dict[str, Any],
+    repository: str,
 ) -> dict[str, Any]:
     """Build a crate component dict from parsed name/version and cache metadata."""
     result: dict[str, Any] = {
@@ -816,6 +854,7 @@ def _build_crate_result(
         "purl": f"pkg:cargo/{crate_name}@{version}",
         "type": "library",
         "source": "crates.io",
+        "bazel_repository": repository,
     }
     if crate_meta.get("license"):
         result["license"] = crate_meta["license"]
@@ -978,7 +1017,7 @@ def resolve_component(
         return result
 
     # Handle score_ prefixed repos that might be modules
-    if normalized_name.startswith("score_"):
+    if normalized_name.startswith("score_") and "_crates__" not in normalized_name:
         return {
             "name": normalized_name,
             "version": "unknown",
@@ -1001,11 +1040,8 @@ def resolve_component(
     cached_crates = metadata.get("crates", {})
 
     if "crate_index__" in repo_name or "crate+" in repo_name:
-        # Extract the crate info part after crate_index__
-        if "crate_index__" in repo_name:
-            crate_part = repo_name.split("crate_index__")[-1]
-        else:
-            crate_part = repo_name.split("+")[-1]
+        # Strip the canonical repository prefix and the crate hub name.
+        crate_part = repo_name.rsplit("+", 1)[-1].split("__", 1)[-1]
 
         # Parse name-version format (e.g., "serde-1.0.228")
         # Handle complex names like "iceoryx2-qnx8-0.7.0" where last part is version
@@ -1024,24 +1060,37 @@ def resolve_component(
 
                 # Look up crate metadata from cache
                 # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = _get_crate_metadata(cached_crates, crate_name, version)
-                return _build_crate_result(crate_name, version, crate_meta)
+                crate_meta = _get_crate_metadata(
+                    cached_crates, crate_name, version, repo_name
+                )
+                return _build_crate_result(
+                    crate_name,
+                    crate_meta.get("version", version),
+                    crate_meta,
+                    repo_name,
+                )
 
     # Handle legacy crate universe format (e.g., crates_io__tokio-1.10.0)
     if repo_name.startswith("crates_io__") or "_crates__" in repo_name:
         parts = repo_name.split("__")
         if len(parts) >= 2:
             crate_info = parts[-1]
-            # Try to split by last hyphen to get name-version
-            last_hyphen = crate_info.rfind("-")
-            if last_hyphen > 0:
-                crate_name = crate_info[:last_hyphen].replace("_", "-")
-                version = crate_info[last_hyphen + 1 :]
+            match = re.fullmatch(r"(.+?)-(\d+\.\d+\.\d+.*)", crate_info)
+            if match:
+                crate_name = match.group(1).replace("_", "-")
+                version = match.group(2)
 
                 # Look up crate metadata from cache
                 # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = _get_crate_metadata(cached_crates, crate_name, version)
-                return _build_crate_result(crate_name, version, crate_meta)
+                crate_meta = _get_crate_metadata(
+                    cached_crates, crate_name, version, repo_name
+                )
+                return _build_crate_result(
+                    crate_name,
+                    crate_meta.get("version", version),
+                    crate_meta,
+                    repo_name,
+                )
 
     # Check if repo is a sub-library of a known parent (e.g., boost.config+ -> boost)
     # rules_boost splits Boost into individual repos like boost.config+, boost.assert+, etc.
@@ -1086,7 +1135,7 @@ def resolve_component(
 
 
 def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge missing metadata from duplicate name/version pairs.
+    """Merge missing metadata from duplicates within the same ecosystem.
 
     Args:
         components: List of component dictionaries
@@ -1094,12 +1143,25 @@ def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, A
     Returns:
         Deduplicated list of components
     """
-    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    seen: dict[tuple[str, str, str], dict[str, Any]] = {}
     for comp in components:
-        key = (comp.get("name", ""), comp.get("version", "unknown"))
+        key = component_identity(comp)
         if key not in seen:
             seen[key] = comp
         else:
+            repositories = (
+                seen[key].get("bazel_repository"),
+                comp.get("bazel_repository"),
+            )
+            if (
+                key[2] == "cargo"
+                and all(repositories)
+                and repositories[0] != repositories[1]
+            ):
+                sources = ", ".join(sorted(repo or "unknown" for repo in repositories))
+                raise ValueError(
+                    f"Conflicting crate repositories for {key[0]}@{key[1]}: {sources}"
+                )
             for field, value in comp.items():
                 if value and not seen[key].get(field):
                     seen[key][field] = value

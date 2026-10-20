@@ -185,6 +185,28 @@ class TestCycloneDXFormatter(unittest.TestCase):
                     ["shlex@1.3.0"] if len(versions) == 1 else [],
                 )
 
+    def test_dependency_names_do_not_choose_between_ecosystems_or_root(self):
+        components = [{"name": "bindgen", "version": "0.72.1"}] + [
+            {
+                "name": "shlex",
+                "version": "1.3.0",
+                "purl": f"pkg:{ecosystem}/shlex@1.3.0",
+            }
+            for ecosystem in ("cargo", "pypi")
+        ]
+        for root_name in ("test-component", "shlex"):
+            with self.subTest(root_name=root_name):
+                cdx = generate_cyclonedx(
+                    components,
+                    {**self.config, "component_name": root_name},
+                    self.timestamp,
+                    external_dep_edges=["bindgen::shlex"],
+                )
+                dependency = next(
+                    d for d in cdx["dependencies"] if d["ref"] == "bindgen@0.72.1"
+                )
+                self.assertEqual(dependency["dependsOn"], [])
+
     def test_generate_cyclonedx_external_references(self):
         """Test that external references are added for crates.io sources."""
         cdx = generate_cyclonedx(self.components, self.config, self.timestamp)

@@ -417,6 +417,46 @@ class TestResolveComponentCrateUniverse(unittest.TestCase):
                     self.assertEqual("checksum" in comp, cached_version == "1.3.0")
                     self.assertEqual("license" in comp, cached_version == "1.3.0")
 
+    def test_repository_cache_preserves_exact_version_and_annotations(self):
+        version = "0.11.1+wasi-snapshot-preview1"
+        for prefix in (
+            "rules_rust++crate+crate_index__",
+            "rules_rust++crate+crates__",
+            "rules_rust++crate+score_crates__",
+            "rules_rust++crate+custom_hub__",
+            "crates_io__",
+            "score_crates__",
+        ):
+            for license_expr in ("MIT", ""):
+                with self.subTest(prefix=prefix, license=license_expr):
+                    repo = prefix + "wasi-" + version.replace("+", "-")
+                    meta = self._meta(
+                        **{
+                            "wasi": {
+                                "version": version,
+                                "license": "Apache-2.0",
+                                "checksum": "old-hash",
+                                "cpe": "cpe:2.3:a:example:wasi:*",
+                                "aliases": ["wasi-alias"],
+                                "pedigree_notes": "Fork",
+                            },
+                            "repo:" + repo: {
+                                "name": "wasi",
+                                "version": version,
+                                "license": license_expr,
+                                "checksum": "",
+                            },
+                        }
+                    )
+                    comp = resolve_component(repo, meta)
+                    self.assertEqual(comp["version"], version)
+                    self.assertEqual(comp["purl"], f"pkg:cargo/wasi@{version}")
+                    self.assertEqual(comp.get("license", ""), license_expr)
+                    self.assertNotIn("checksum", comp)
+                    self.assertEqual(comp["cpe"], "cpe:2.3:a:example:wasi:*")
+                    self.assertEqual(comp["aliases"], ["wasi-alias"])
+                    self.assertEqual(comp["pedigree_notes"], "Fork")
+
     def test_bare_name_requires_one_cached_version(self):
         crates = {"shlex@1.3.0": {"version": "1.3.0", "checksum": "a" * 64}}
         self.assertEqual(
@@ -599,6 +639,33 @@ class TestDeduplicateComponents(unittest.TestCase):
         ]
         result = deduplicate_components(components)
         self.assertEqual(len(result), 2)
+
+    def test_same_name_and_version_in_different_ecosystems_stay_separate(self):
+        python = {
+            "name": "shlex",
+            "version": "1.3.0",
+            "purl": "pkg:pypi/shlex@1.3.0",
+            "license": "Apache-2.0",
+        }
+        rust = {
+            "name": "shlex",
+            "version": "1.3.0",
+            "purl": "pkg:cargo/shlex@1.3.0",
+            "bazel_repository": "crate_repo",
+            "checksum": "a" * 64,
+        }
+        for entries in ([python, rust], [rust, python]):
+            with self.subTest(order=[c["purl"] for c in entries]):
+                result = deduplicate_components([dict(c) for c in entries])
+                self.assertEqual(result, entries)
+
+    def test_cargo_annotations_without_repository_can_merge(self):
+        base = {"name": "shlex", "version": "1.3.0", "purl": "pkg:cargo/shlex@1.3.0"}
+        result = deduplicate_components(
+            [{**base, "bazel_repository": "crate_repo"}, {**base, "cpe": "manual-cpe"}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cpe"], "manual-cpe")
 
     def test_exact_duplicate_keeps_first(self):
         components = [
@@ -1276,6 +1343,226 @@ class TestMain(unittest.TestCase):
                 self.assertEqual(dependencies["shlex@1.3.0"], ["shlex@2.0.1"])
                 self.assertEqual(dependencies["shlex@2.0.1"], [])
                 self.assertEqual(set(dependencies), refs | {root_ref})
+
+    def test_python_and_rust_same_name_version_in_both_reports(self):
+        python = {
+            "name": "shlex",
+            "version": "1.3.0",
+            "purl": "pkg:pypi/shlex@1.3.0",
+            "license": "Apache-2.0",
+            "checksum": "b" * 64,
+        }
+        rust_repo = "rules_rust++crate+custom_hub__shlex-1.3.0"
+        parent_repo = "rules_rust++crate+custom_hub__bindgen-1.0.0"
+        python_cache = os.path.join(self.tmpdir, "python.json")
+        with open(python_cache, "w") as f:
+            json.dump({"shlex": python}, f)
+        metadata = {
+            "crates": {
+                "repo:" + rust_repo: {
+                    "version": "1.3.0",
+                    "license": "MIT",
+                    "checksum": "a" * 64,
+                }
+            }
+        }
+        previous_ids = None
+        for repos in ([rust_repo, parent_repo], [parent_repo, rust_repo]):
+            with self.subTest(order=repos):
+                self._run(
+                    input_data={
+                        **self._DEFAULT_INPUT,
+                        "config": {
+                            **self._DEFAULT_CONFIG,
+                            "component_name": "shlex",
+                            "component_version": "1.3.0",
+                        },
+                        "external_repos": repos,
+                        "external_dep_edges": [f"{parent_repo}::{rust_repo}"],
+                    },
+                    metadata=metadata,
+                    extra_args=["--python-cache", python_cache],
+                )
+                with open(self._spdx_path) as f:
+                    spdx = json.load(f)
+                packages = {
+                    p["externalRefs"][0]["referenceLocator"]: p
+                    for p in spdx["packages"]
+                    if p["SPDXID"] != "SPDXRef-RootPackage"
+                }
+                self.assertEqual(len(packages), 3)
+                self.assertEqual(len({p["SPDXID"] for p in spdx["packages"]}), 4)
+                for ecosystem, license_expr, checksum in (
+                    ("pypi", "Apache-2.0", "b" * 64),
+                    ("cargo", "MIT", "a" * 64),
+                ):
+                    package = packages[f"pkg:{ecosystem}/shlex@1.3.0"]
+                    self.assertEqual(package["licenseDeclared"], license_expr)
+                    self.assertEqual(package["checksums"][0]["checksumValue"], checksum)
+                parent = packages["pkg:cargo/bindgen@1.0.0"]["SPDXID"]
+                rust_id = packages["pkg:cargo/shlex@1.3.0"]["SPDXID"]
+                self.assertEqual(
+                    {
+                        r["relatedSpdxElement"]
+                        for r in spdx["relationships"]
+                        if r["spdxElementId"] == parent
+                    },
+                    {rust_id},
+                )
+                with open(self._cdx_path) as f:
+                    cdx = json.load(f)
+                components = {c["purl"]: c for c in cdx["components"]}
+                self.assertEqual(len(components), 3)
+                for ecosystem, license_expr, checksum in (
+                    ("pypi", "Apache-2.0", "b" * 64),
+                    ("cargo", "MIT", "a" * 64),
+                ):
+                    component = components[f"pkg:{ecosystem}/shlex@1.3.0"]
+                    self.assertEqual(
+                        component["licenses"], [{"license": {"id": license_expr}}]
+                    )
+                    self.assertEqual(component["hashes"][0]["content"], checksum)
+                refs = {c["bom-ref"] for c in cdx["components"]}
+                root = cdx["metadata"]["component"]["bom-ref"]
+                self.assertEqual(len(refs | {root}), 4)
+                dependencies = {
+                    d["ref"]: set(d["dependsOn"]) for d in cdx["dependencies"]
+                }
+                self.assertEqual(dependencies[root], refs)
+                self.assertEqual(
+                    dependencies[components["pkg:cargo/bindgen@1.0.0"]["bom-ref"]],
+                    {components["pkg:cargo/shlex@1.3.0"]["bom-ref"]},
+                )
+                ids = (
+                    {p: c["SPDXID"] for p, c in packages.items()},
+                    {p: c["bom-ref"] for p, c in components.items()},
+                )
+                if previous_ids is not None:
+                    self.assertEqual(ids, previous_ids)
+                previous_ids = ids
+
+    def test_different_repositories_with_same_crate_version_are_rejected(self):
+        registry = "rules_rust++crate+crate_index__shlex-1.3.0"
+        fork = "rules_rust++crate+custom_hub__shlex-1.3.0"
+        cache_path = os.path.join(self.tmpdir, "crates_cache.json")
+        with open(cache_path, "w") as f:
+            json.dump(
+                {
+                    "repo:" + registry: {
+                        "version": "1.3.0",
+                        "license": "MIT",
+                        "checksum": "a" * 64,
+                        "bazel_repository": registry,
+                    },
+                    "repo:" + fork: {
+                        "version": "1.3.0",
+                        "license": "",
+                        "checksum": "b" * 64,
+                        "bazel_repository": fork,
+                    },
+                },
+                f,
+            )
+        for repos in ([registry, fork], [fork, registry]):
+            for edge_only in (False, True):
+                with self.subTest(repos=repos, edge_only=edge_only):
+                    with self.assertRaisesRegex(
+                        ValueError, "Conflicting crate repositories for shlex@1.3.0"
+                    ) as error:
+                        self._run(
+                            input_data={
+                                **self._DEFAULT_INPUT,
+                                "external_repos": repos[:1] if edge_only else repos,
+                                "external_dep_edges": [f"{repos[0]}::{repos[1]}"],
+                            },
+                            metadata={},
+                            extra_args=["--crates-cache", cache_path],
+                        )
+                    self.assertIn(registry, str(error.exception))
+                    self.assertIn(fork, str(error.exception))
+                    self.assertFalse(os.path.exists(self._spdx_path))
+                    self.assertFalse(os.path.exists(self._cdx_path))
+
+    def test_named_hub_crates_survive_default_exclusions(self):
+        for hub in ("crates", "custom_hub", "score_crates"):
+            with self.subTest(hub=hub):
+                repo = f"rules_rust++crate+{hub}__anstream-1.0.0"
+                self._run(
+                    input_data={
+                        **self._DEFAULT_INPUT,
+                        "external_repos": [repo, "rules_rust+"],
+                        "exclude_patterns": [
+                            "rules_rust",
+                            "rules_cc",
+                            "bazel_tools",
+                            "platforms",
+                            "bazel_skylib",
+                            "rules_python",
+                            "rules_proto",
+                            "protobuf",
+                            "local_config_",
+                            "remote_",
+                        ],
+                    },
+                    metadata={},
+                )
+                with open(self._spdx_path) as f:
+                    packages = [
+                        p
+                        for p in json.load(f)["packages"]
+                        if p["SPDXID"] != "SPDXRef-RootPackage"
+                    ]
+                self.assertEqual(
+                    [(p["name"], p["versionInfo"]) for p in packages],
+                    [("anstream", "1.0.0")],
+                )
+                with open(self._cdx_path) as f:
+                    components = json.load(f)["components"]
+                self.assertEqual(
+                    [(c["name"], c["version"]) for c in components],
+                    [("anstream", "1.0.0")],
+                )
+
+    def test_repository_license_takes_precedence_over_name_version_cache(self):
+        repo = "rules_rust++crate+crate_index__shlex-1.3.0"
+        cache_path = os.path.join(self.tmpdir, "crates_cache.json")
+        with open(cache_path, "w") as f:
+            json.dump(
+                {
+                    "repo:" + repo: {
+                        "version": "1.3.0",
+                        "license": "MIT",
+                        "checksum": "a" * 64,
+                    },
+                    "shlex@1.3.0": {"version": "1.3.0", "license": "Apache-2.0"},
+                },
+                f,
+            )
+        self._run(
+            input_data={**self._DEFAULT_INPUT, "external_repos": [repo]},
+            metadata={
+                "crates": {
+                    "shlex": {
+                        "version": "1.3.0",
+                        "license": "Apache-2.0",
+                        "cpe": "cpe:2.3:a:example:shlex:1.3.0:*:*:*:*:*:*:*",
+                        "pedigree_notes": "Manual annotation",
+                    }
+                }
+            },
+            extra_args=["--crates-cache", cache_path],
+        )
+        with open(self._spdx_path) as f:
+            package = next(p for p in json.load(f)["packages"] if p["name"] == "shlex")
+        self.assertEqual(package["licenseDeclared"], "MIT")
+        self.assertEqual(package["checksums"][0]["checksumValue"], "a" * 64)
+        with open(self._cdx_path) as f:
+            component = json.load(f)["components"][0]
+        self.assertEqual(component["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertEqual(component["pedigree"]["notes"], "Manual annotation")
+        self.assertEqual(
+            component["cpe"], "cpe:2.3:a:example:shlex:1.3.0:*:*:*:*:*:*:*"
+        )
 
     def test_crates_cache_enriches_crate(self):
         """--crates-cache provides license and version data for resolved crate repos."""

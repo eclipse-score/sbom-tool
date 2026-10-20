@@ -122,7 +122,7 @@ the qualification scope requires the JDK installation as well.
 | `python_lockfiles` | `[]` | One or more pip-compile lockfiles (`requirements.txt.lock`) used to add pinned PyPI packages, SHA-256 hashes, and license expressions from DASH. Packages that DASH cannot verify retain `NOASSERTION`; descriptions are not enriched yet and remain `Missing`. |
 | `auto_python_cache` | `True` | Generates Python package metadata from `python_lockfiles`; set to `False` to disable it. |
 | `java_files` | `[]` | Java or JAR files to inventory as file-level components. Each file gets its name, size, and SHA-256 checksum; this does not inventory the host Java runtime. |
-| `auto_crates_cache` | `True` | Runs `generate_crates_metadata_cache` at build time (requires network) to fetch Rust crate license, supplier, and description from crates.io API; set to `False` only as a workaround for air-gapped or offline build environments — doing so produces a non-compliant SBOM where all Rust crates show `NOASSERTION` for license, supplier, and description. Has no effect when no lockfiles are provided (pure C++ projects). |
+| `auto_crates_cache` | `True` | Collects Rust licenses from available `Cargo.toml` files, with an exact-version crates.io fallback. Description and supplier lookup still require network access. Set to `False` to disable collection. |
 | `cargo_lockfile` | `None` | Path to a `Cargo.lock` file for crate enumeration; not needed when `module_lockfiles` is provided, as a synthetic `Cargo.lock` is generated from it automatically. **Deprecated — will be removed in a future release.** |
 | `cdxgen_sbom` | `None` | Label to a pre-generated cdxgen CycloneDX JSON file; alternative to `auto_cdxgen` for C++ projects where automatic scanning is disabled or restricted in CI. Ignored for pure Rust projects. |
 | `auto_cdxgen` | `False` | Runs cdxgen automatically inside the Bazel build using Bazel-managed Node/npm (no host `npm` or `nvm` installation required). Uses `no-sandbox` execution to scan the source tree. Ignored for pure Rust projects. |
@@ -151,7 +151,7 @@ Python `py_binary`, respectively).
 runs DASH license enrichment by default, which shells out to
 `uvx dash-license-scan` — a Java-based tool — so a host JRE is still required
 whenever `python_lockfiles` is used. `auto_crates_cache` does not have this
-dependency; it only uses the crates.io API by default.
+dependency; it reads local crate manifests and uses the crates.io API.
 
 If your environment blocks required network access, set `auto_cdxgen = False` and provide `cdxgen_sbom` explicitly.
 
@@ -212,7 +212,7 @@ Generated in `bazel-bin/`:
 - **Bazel module graph** — version, PURL, and registry info for `bazel_dep` modules
 - **Bazel aspect** — transitive dependency graph and external repo dependency edges
 - **dash-license-scan** — Python license data from the Eclipse Foundation and ClearlyDefined services
-- **crates.io API** — licenses, descriptions, and suppliers for Rust crates
+- **Crate manifests and crates.io API** — Rust licenses from local manifests first; API fallback, descriptions, and suppliers from crates.io
 - **cdxgen** — C++ dependency licenses, descriptions, and suppliers
 
 ### Automated Metadata Sources
@@ -267,12 +267,15 @@ accepts the same file through `--registry-cache`.
 
 Only transitive dependencies of the declared build targets are included. Build-time tools (compilers, build systems, test frameworks) are excluded via `exclude_patterns`.
 
-Different versions of a component are kept as separate SBOM entries. Rust caches
-use `name@version` keys so each version keeps its own checksum and license.
+Different versions of a component are kept as separate SBOM entries. Bazel Rust
+caches use `repo:<repository>` keys to keep source metadata separate. Standalone
+lockfile collection uses `name@version` keys; older caches remain supported.
+Generation stops if the same crate name/version is selected from different Bazel
+repositories, because they may contain different sources.
 
 ### License Data by Language
 
-- **Rust**: Licenses, descriptions, and suppliers from crates.io API. Crates with platform-specific suffixes (e.g. `iceoryx2-bb-lock-free-qnx8`) fall back to the base crate name for lookup. Optional `dash-license-scan` integration is still available in the cache generator for environments that require it.
+- **Rust**: Direct `package.license` expressions come from the selected crate's `Cargo.toml`. Missing expressions use an exact-version API fallback only for confirmed, unpatched crates.io sources. Workspace inheritance and `license-file` processing are deferred. The cache records `license_source` or an unresolved `license_error`. Description/supplier lookup still uses the API, including the existing base-name fallback for platform forks. Optional `dash-license-scan` remains available.
 - **Python**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined), using `pypi/pypi/-/<name>/<version>` identifiers generated from pip-compile lockfiles. Descriptions and suppliers are not enriched yet.
 - **C++**: Licenses, descriptions, and suppliers via cdxgen source tree scan. There is no dash-license-scan integration for C++ — it does not support `pkg:generic/...` PURLs used by BCR modules. If cdxgen cannot resolve a component, its description is set to `"Missing"` and its license field is empty.
 

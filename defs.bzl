@@ -91,7 +91,7 @@ def sbom(
         python_lockfiles: pip-compile requirements lockfiles for Python package metadata.
         java_files: Java/JAR files to inventory as file-level components.
         auto_python_cache: Run Python metadata collection when python_lockfiles are provided
-        auto_crates_cache: Run crates metadata cache generation when cargo_lockfile or module_lockfiles is provided
+        auto_crates_cache: Collect crate metadata when manifests or lockfiles are available
         registry_cache: Previously downloaded registry metadata for offline builds
         auto_registry_cache: Download registry metadata to read archive checksums
         output_formats: List of formats to generate ("spdx", "cyclonedx")
