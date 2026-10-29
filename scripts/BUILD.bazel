@@ -36,12 +36,14 @@ py_binary(
 py_library(
     name = "generate_crates_metadata_cache",
     srcs = ["generate_crates_metadata_cache.py"],
+    deps = ["//internal/generator:source_metadata"],
 )
 
 py_binary(
     name = "generate_crates_metadata_cache_bin",
     srcs = ["generate_crates_metadata_cache.py"],
     main = "generate_crates_metadata_cache.py",
+    deps = ["//internal/generator:source_metadata"],
 )
 
 py_binary(

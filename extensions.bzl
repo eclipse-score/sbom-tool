@@ -23,6 +23,8 @@ Usage in MODULE.bazel:
     use_repo(sbom_ext, "sbom_metadata")
 """
 
+load("//internal:module_sources.bzl", "collect_git_overrides")
+
 def _generate_purl_from_url(url, name, version):
     """Generate Package URL from download URL."""
     if not url:
@@ -204,6 +206,8 @@ def _sbom_metadata_impl(module_ctx):
     all_crates = {}
     all_licenses = {}
     tracked_modules = []
+    git_overrides = collect_git_overrides(module_ctx)
+    git_discovery_incomplete = git_overrides.pop("", None) != None
 
     for mod in module_ctx.modules:
         # Collect tracked module names for version extraction
@@ -244,12 +248,13 @@ def _sbom_metadata_impl(module_ctx):
 
         # Collect git_repository metadata
         for tag in mod.tags.git_repository:
-            version = tag.tag if tag.tag else (tag.commit[:12] if tag.commit else "unknown")
+            version = tag.tag if tag.tag else (tag.commit if tag.commit else "unknown")
             purl = tag.purl if tag.purl else _generate_purl_from_git(tag.remote, tag.name, version)
 
             all_git_repos[tag.name] = {
                 "version": version,
                 "remote": tag.remote,
+                "purl_explicit": bool(tag.purl),
                 "commit": tag.commit if tag.commit else "",
                 "commit_date": tag.commit_date if hasattr(tag, "commit_date") and tag.commit_date else "",
                 "tag": tag.tag if tag.tag else "",
@@ -289,6 +294,7 @@ def _sbom_metadata_impl(module_ctx):
                 all_crates[tag.name] = {
                     "version": version,
                     "purl": tag.purl if tag.purl else "pkg:cargo/{}@{}".format(tag.name, version),
+                    "purl_explicit": bool(tag.purl),
                     "license": tag.license,
                     "supplier": supplier,
                     "cpe": cpe,
@@ -321,6 +327,7 @@ def _sbom_metadata_impl(module_ctx):
                 all_git_repos[tag.name] = {
                     "version": version,
                     "remote": remote,
+                    "purl_explicit": bool(tag.purl),
                     "commit": "",
                     "tag": "",
                     "purl": purl,
@@ -371,6 +378,8 @@ def _sbom_metadata_impl(module_ctx):
     # Generate metadata JSON
     metadata_content = json.encode({
         "modules": all_modules,
+        "git_overrides": git_overrides,
+        "git_discovery_incomplete": git_discovery_incomplete,
         "http_archives": all_http_archives,
         "git_repositories": all_git_repos,
         "crates": all_crates,

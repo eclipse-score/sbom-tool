@@ -47,6 +47,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+# Preserve direct-script invocation as well as Bazel and python -m entry points.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from internal.generator.source_metadata import (
+    GIT_FIELDS,
+    REGISTRY_SOURCES,
+    parse_module_bazel_locks,
+    parse_module_bazel_lock as parse_module_bazel_lock,  # Compatibility re-export.
+)
+
 try:
     import tomllib
 except ImportError:
@@ -71,7 +82,7 @@ def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
         source = package.get("source", "")
 
         # Only include crates from crates.io
-        if "registry+https://github.com/rust-lang/crates.io-index" in source:
+        if source in REGISTRY_SOURCES:
             crates[f"{name}@{package['version']}"] = {
                 "name": name,
                 "version": package["version"],
@@ -80,110 +91,6 @@ def parse_cargo_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
             }
 
     return crates
-
-
-def parse_module_bazel_lock(lockfile_path: str) -> dict[str, dict[str, Any]]:
-    """Parse MODULE.bazel.lock and extract crate information from cargo-bazel resolution.
-
-    The MODULE.bazel.lock (from score_crates or similar) contains resolved crate
-    specs under moduleExtensions -> crate_universe -> generatedRepoSpecs.
-    Each crate entry has name, version, sha256, and download URL.
-
-    Args:
-        lockfile_path: Path to MODULE.bazel.lock file
-
-    Returns:
-        Dict mapping canonical repository names to crate metadata
-    """
-    with open(lockfile_path, encoding="utf-8") as f:
-        lock_data = json.load(f)
-
-    crates = {}
-    extensions = lock_data.get("moduleExtensions", {})
-
-    # Find the crate_universe extension (key contains "crate_universe" or "crate")
-    crate_ext = None
-    for ext_key, ext_val in extensions.items():
-        if "crate" in ext_key.lower():
-            crate_ext = ext_val
-            break
-
-    if not crate_ext:
-        print(
-            "  WARNING: No crate extension found in MODULE.bazel.lock", file=sys.stderr
-        )
-        return crates
-
-    # Get generatedRepoSpecs from 'general' (or the first available key)
-    general = crate_ext.get("general", {})
-    specs = general.get("generatedRepoSpecs", {})
-
-    for repo_name, spec in specs.items():
-        # Crate repositories use <hub>__<name>-<version>; skip the hub itself.
-        if "__" not in repo_name:
-            continue
-
-        crate_part = repo_name.split("__", 1)[1]
-
-        # Parse name-version (e.g., "serde-1.0.228", "iceoryx2-qnx8-0.7.0")
-        m = re.match(r"^(.+?)-(\d+\.\d+\.\d+.*)$", crate_part)
-        if not m:
-            continue
-
-        name = m.group(1)
-        version = m.group(2)
-        attrs = spec.get("attributes", {})
-        sha256 = attrs.get("sha256", "")
-        archive_prefix = attrs.get("strip_prefix", "")
-        exact_version = archive_prefix.removeprefix(name + "-")
-        version_from_repository = True
-        if (
-            archive_prefix.startswith(name + "-")
-            and exact_version.replace("+", "-") == version
-        ):
-            version = exact_version
-            version_from_repository = False
-
-        repository = (
-            ext_key.split("//")[0].lstrip("@")
-            + "+"
-            + ext_key.rsplit("%", 1)[-1]
-            + "+"
-            + repo_name
-        )
-        crates[repository] = {
-            "name": name,
-            "version": version,
-            "version_from_repository": version_from_repository,
-            "checksum": sha256,
-            "source": (
-                "registry+https://github.com/rust-lang/crates.io-index"
-                if _is_cratesio_archive(attrs, name, version)
-                else "module-bazel-lock"
-            ),
-            "repository": repository,
-        }
-
-    return crates
-
-
-def _is_cratesio_archive(attrs: dict[str, Any], name: str, version: str) -> bool:
-    """Only permit API fallback for a matching, unpatched crates.io archive."""
-    if any(
-        attrs.get(k)
-        for k in ("remote", "patches", "remote_patches", "patch_cmds", "patch_cmds_win")
-    ):
-        return False
-    paths = {
-        ("static.crates.io", f"/crates/{name}/{version}/download"),
-        ("static.crates.io", f"/crates/{name}/{name}-{version}.crate"),
-        ("crates.io", f"/api/v1/crates/{name}/{version}/download"),
-    }
-    urls = attrs.get("urls", []) or [attrs.get("url", "")]
-    return bool(urls) and all(
-        (parsed.scheme == "https" and (parsed.netloc, parsed.path) in paths)
-        for parsed in map(urllib.parse.urlsplit, urls)
-    )
 
 
 def select_build_crates(
@@ -290,7 +197,7 @@ def generate_synthetic_cargo_lock(
         lines.append("[[package]]")
         lines.append(f'name = "{info["name"]}"')
         lines.append(f'version = "{info["version"]}"')
-        lines.append('source = "registry+https://github.com/rust-lang/crates.io-index"')
+        lines.append(f'source = "{REGISTRY_SOURCES[0]}"')
         lines.append("")
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -595,29 +502,15 @@ def generate_cache(
         Metadata keyed by Bazel repository, or name@version for standalone lockfiles
     """
     crates: dict[str, dict[str, Any]] = {}
-    repositories: dict[str, dict[str, Any]] = {}
 
     if cargo_lock_path:
         print(f"Parsing {cargo_lock_path}...")
         crates = parse_cargo_lock(cargo_lock_path)
         print(f"Found {len(crates)} crates from Cargo.lock")
 
-    # Merge crates from MODULE.bazel.lock files
-    for module_lock_path in module_lock_paths or []:
-        print(f"Parsing {module_lock_path}...")
-        module_crates = parse_module_bazel_lock(module_lock_path)
-        for info in module_crates.values():
-            repo = info["repository"]
-            if repo in repositories and repositories[repo] != info:
-                raise ValueError(f"Conflicting crate sources for {repo}")
-            repositories[repo] = info
-        added = 0
-        for info in module_crates.values():
-            key = f"{info['name']}@{info['version']}"
-            if key not in crates:
-                crates[key] = info
-                added += 1
-        print(f"Found {len(module_crates)} crates in {module_lock_path} ({added} new)")
+    repositories = parse_module_bazel_locks(module_lock_paths or [])
+    for info in repositories.values():
+        crates.setdefault(f"{info['name']}@{info['version']}", info)
 
     if deps_path:
         cargo_packages = None
@@ -632,13 +525,7 @@ def generate_cache(
 
     local_licenses = {key: read_manifest_license(info) for key, info in crates.items()}
     registry_crates = {
-        key: info
-        for key, info in crates.items()
-        if info["source"]
-        in (
-            "registry+https://github.com/rust-lang/crates.io-index",
-            "sparse+https://index.crates.io/",
-        )
+        key: info for key, info in crates.items() if info["source"] in REGISTRY_SOURCES
     }
     license_map: dict[str, str] = {}
     if use_dash_license_scan:
@@ -701,6 +588,13 @@ def generate_cache(
             "description": meta.get("description", ""),
             "supplier": meta.get("supplier", ""),
         }
+        cache[key].update(
+            {
+                field: info[field]
+                for field in ("source", "source_url", *GIT_FIELDS)
+                if field in info
+            }
+        )
         if info.get("repository"):
             cache[key]["bazel_repository"] = info["repository"]
         if not license_expr:
