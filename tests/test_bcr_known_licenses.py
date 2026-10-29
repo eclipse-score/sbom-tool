@@ -241,10 +241,7 @@ class TestApplyKnownLicenses(unittest.TestCase):
         self.assertEqual(
             metadata["modules"]["score_custom"]["supplier"], "Custom Supplier"
         )
-        self.assertEqual(
-            metadata["modules"]["score_custom"]["url"],
-            "https://github.com/eclipse-score/score_custom",
-        )
+        self.assertNotIn("url", metadata["modules"]["score_custom"])
 
     def test_score_module_default_applied_when_no_override(self):
         """S-CORE module receives Apache-2.0 and Eclipse Foundation by default."""
@@ -263,10 +260,7 @@ class TestApplyKnownLicenses(unittest.TestCase):
         self.assertEqual(
             metadata["modules"]["score_baselibs"]["supplier"], "Eclipse Foundation"
         )
-        self.assertEqual(
-            metadata["modules"]["score_baselibs"]["url"],
-            "https://github.com/eclipse-score/score_baselibs",
-        )
+        self.assertNotIn("url", metadata["modules"]["score_baselibs"])
 
     # -- Preserves existing data ----------------------------------------------
 

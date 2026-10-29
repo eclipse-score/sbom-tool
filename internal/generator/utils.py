@@ -23,7 +23,7 @@ from typing import Any
 def component_identity(component: dict[str, Any]) -> tuple[str, str, str]:
     """Keep packages from different ecosystems separate."""
     purl = component.get("purl") or ""
-    ecosystem = (
+    ecosystem = component.get("ecosystem") or (
         purl[4:].split("/", 1)[0]
         if purl.startswith("pkg:")
         else {

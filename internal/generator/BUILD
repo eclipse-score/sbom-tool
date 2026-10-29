@@ -27,6 +27,9 @@ py_binary(
     deps = [
         ":cyclonedx_formatter",
         ":registry_metadata",
+        ":reporting",
+        ":source_identity",
+        ":source_metadata",
         ":spdx_formatter",
         ":utils",
     ],
@@ -38,6 +41,9 @@ py_library(
     deps = [
         ":cyclonedx_formatter",
         ":registry_metadata",
+        ":reporting",
+        ":source_identity",
+        ":source_metadata",
         ":spdx_formatter",
         ":utils",
     ],
@@ -46,6 +52,7 @@ py_library(
 py_library(
     name = "registry_metadata",
     srcs = ["registry_metadata.py"],
+    deps = [":reporting"],
 )
 
 py_library(
@@ -56,11 +63,36 @@ py_library(
 py_library(
     name = "spdx_formatter",
     srcs = ["spdx_formatter.py"],
-    deps = [":utils"],
+    deps = [
+        ":reporting",
+        ":utils",
+    ],
 )
 
 py_library(
     name = "cyclonedx_formatter",
     srcs = ["cyclonedx_formatter.py"],
-    deps = [":utils"],
+    deps = [
+        ":reporting",
+        ":utils",
+    ],
+)
+
+py_library(
+    name = "reporting",
+    srcs = ["reporting.py"],
+)
+
+py_library(
+    name = "source_metadata",
+    srcs = ["source_metadata.py"],
+)
+
+py_library(
+    name = "source_identity",
+    srcs = ["source_identity.py"],
+    deps = [
+        ":reporting",
+        ":source_metadata",
+    ],
 )

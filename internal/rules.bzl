@@ -21,6 +21,22 @@ to generate SPDX and CycloneDX format SBOMs.
 load(":aspect.bzl", "sbom_aspect")
 load(":providers.bzl", "SbomDepsInfo")
 
+def crate_metadata_inputs(repositories, edges, manifests):
+    """Keep network collection independent of SBOM config and internal targets."""
+    selected = {repo: True for repo in repositories}
+    for edge in edges:
+        if "::" in edge:
+            selected[edge.split("::", 1)[1].rstrip("+")] = True
+    selected = sorted([
+        repo
+        for repo in selected
+        if any([marker in repo for marker in ["crate_index__", "crates_io__", "_crates__", "crate+"]])
+    ])
+    return {
+        "external_repos": selected,
+        "crate_manifests": {repo: manifests[repo] for repo in selected if repo in manifests},
+    }
+
 def _sbom_impl(ctx):
     """Generates SBOM by combining aspect data with extension metadata.
 
@@ -162,10 +178,19 @@ def _sbom_impl(ctx):
     crates_cache = None
     if (crate_manifests or ctx.file.cargo_lockfile or ctx.files.module_lockfiles) and ctx.attr.auto_crates_cache:
         crates_cache = ctx.actions.declare_file(ctx.attr.name + "_crates_metadata.json")
-        cache_inputs = [deps_json] + crate_manifests
+        crates_input = ctx.actions.declare_file(ctx.attr.name + "_crates_input.json")
+        ctx.actions.write(
+            output = crates_input,
+            content = json.encode(crate_metadata_inputs(
+                deps_data["external_repos"],
+                deps_data["external_dep_edges"],
+                deps_data["crate_manifests"],
+            )),
+        )
+        cache_inputs = [crates_input] + crate_manifests
         cache_args = ctx.actions.args()
         cache_args.add(crates_cache)
-        cache_args.add("--deps-json", deps_json)
+        cache_args.add("--deps-json", crates_input)
         if is_verbose:
             cache_args.add("--verbose")
         if ctx.file.cargo_lockfile:
@@ -180,7 +205,7 @@ def _sbom_impl(ctx):
             executable = ctx.executable._crates_cache_script,
             arguments = [cache_args],
             mnemonic = "CratesCacheGenerate",
-            progress_message = "Generating crates metadata cache for %s" % ctx.attr.name,
+            progress_message = "Generating crates metadata cache for %s (crates.io: 1 request/sec; may take several minutes)" % ctx.attr.name,
             execution_requirements = {"requires-network": ""},
             use_default_shell_env = True,
         )

@@ -12,6 +12,7 @@
 # *******************************************************************************
 
 load("@score_tooling//python_basics:defs.bzl", "score_py_pytest")
+load(":test_module_sources.bzl", "module_sources_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -86,4 +87,30 @@ score_py_pytest(
     srcs = ["test_real_sbom_integration.py"],
     data = glob(["fixtures/**"]),
     deps = ["//internal/generator:sbom_generator_lib"],
+)
+
+score_py_pytest(
+    name = "test_source_metadata",
+    srcs = ["test_source_metadata.py"],
+    deps = [
+        "//internal/generator:sbom_generator_lib",
+        "//internal/generator:source_identity",
+        "//internal/generator:source_metadata",
+        "//scripts:generate_crates_metadata_cache",
+    ],
+)
+
+module_sources_test(name = "test_module_sources")
+
+score_py_pytest(
+    name = "test_reporting_credentials",
+    srcs = ["test_reporting_credentials.py"],
+    deps = [
+        "//internal/generator:registry_metadata",
+        "//internal/generator:reporting",
+        "//internal/generator:sbom_generator_lib",
+        "//internal/generator:source_identity",
+        "//scripts:generate_crates_metadata_cache",
+        "//scripts:generate_registry_metadata_cache",
+    ],
 )
