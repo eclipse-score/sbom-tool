@@ -32,6 +32,20 @@ from internal.generator.spdx_formatter import generate_spdx
 from internal.generator.cyclonedx_formatter import generate_cyclonedx
 from internal.generator.registry_metadata import archive_metadata
 from internal.generator.utils import component_identity
+from internal.generator.source_identity import git_identity, crate_source_identity
+from internal.generator.source_metadata import (
+    read_module_lockfiles,
+    parse_module_bazel_locks,
+)
+
+_IDENTITY_FIELDS = (
+    "cpe",
+    "aliases",
+    "pedigree_ancestors",
+    "pedigree_descendants",
+    "pedigree_variants",
+    "pedigree_notes",
+)
 
 
 def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]:
@@ -72,24 +86,21 @@ def parse_module_bazel_files(file_paths: list[str]) -> dict[str, dict[str, str]]
         if name_match and version_match:
             name = name_match.group(1)
             version = version_match.group(1)
-            purl = (
-                f"pkg:github/eclipse-score/{name}@{version}"
-                if name.startswith("score_")
-                else f"pkg:generic/{name}@{version}"
-            )
+            purl = f"pkg:generic/{name}@{version}"
             entry: dict[str, str] = {
                 "version": version,
                 "purl": purl,
             }
-            if name.startswith("score_"):
-                entry["url"] = f"https://github.com/eclipse-score/{name}"
             modules[name] = entry
 
     return modules
 
 
 def parse_module_lockfiles(
-    file_paths: list[str], registry_sources: dict[str, str] | None = None
+    file_paths: list[str],
+    registry_sources: dict[str, str] | None = None,
+    *,
+    lockfiles: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Parse MODULE.bazel.lock files to infer module versions and checksums.
 
@@ -103,13 +114,9 @@ def parse_module_lockfiles(
     # Track candidate MODULE.bazel entries (evaluated versions during resolution)
     module_candidate_versions: dict[str, set[str]] = {}
 
-    for fpath in file_paths:
-        try:
-            with open(fpath, encoding="utf-8") as f:
-                lock_data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-
+    if lockfiles is None:
+        lockfiles = read_module_lockfiles(file_paths)
+    for lock_data in lockfiles.values():
         registry_hashes = lock_data.get("registryFileHashes", {})
         if not isinstance(registry_hashes, dict):
             continue
@@ -187,20 +194,13 @@ def parse_module_lockfiles(
         if not version:
             continue
 
-        purl = (
-            f"pkg:github/eclipse-score/{name}@{version}"
-            if name.startswith("score_")
-            else f"pkg:generic/{name}@{version}"
-        )
+        purl = f"pkg:generic/{name}@{version}"
 
         entry: dict[str, str] = {
             "version": version,
             "purl": purl,
         }
         entry.update(archive)
-
-        if name.startswith("score_") and not entry.get("url"):
-            entry["url"] = f"https://github.com/eclipse-score/{name}"
 
         modules[name] = entry
 
@@ -304,9 +304,6 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
     licenses = metadata.get("licenses", {})
 
     for module_name, module_data in modules.items():
-        if module_name.startswith("score_") and not module_data.get("url"):
-            module_data["url"] = f"https://github.com/eclipse-score/{module_name}"
-
         if module_data.get("license"):
             continue  # Already has a license — do not overwrite
 
@@ -403,6 +400,10 @@ def enrich_components_from_cpp_cache(
             base_name = comp_name.rstrip("+")
             if "." in base_name:
                 parent = base_name.split(".")[0]
+                if parent in metadata.get(
+                    "git_overrides", {}
+                ) or parent in metadata.get("git_repositories", {}):
+                    continue
                 cpp_match = cpp_by_name.get(normalize_name(parent))
         if not cpp_match:
             continue
@@ -417,13 +418,19 @@ def enrich_components_from_cpp_cache(
         if not comp.get("supplier") and cpp_match.get("supplier"):
             comp["supplier"] = cpp_match["supplier"]
 
+        # Name-only C++ enrichment cannot establish a Git revision or archive hash.
+        if comp.get("source") == "git":
+            continue
+
         if comp.get("version") in ("unknown", "") and cpp_match.get("version") not in (
             "unknown",
             "",
         ):
             comp["version"] = cpp_match["version"]
 
-        if comp.get("purl", "").endswith("@unknown") and cpp_match.get("purl"):
+        if (
+            not comp.get("purl") or comp["purl"].endswith("@unknown")
+        ) and cpp_match.get("purl"):
             comp["purl"] = cpp_match["purl"]
 
         if not comp.get("url") and cpp_match.get("url"):
@@ -509,8 +516,7 @@ def mark_missing_cpp_descriptions(
             continue
         if comp.get("type") != "library":
             continue
-        purl = comp.get("purl", "")
-        if purl.startswith("pkg:cargo/"):
+        if component_identity(comp)[2] == "cargo":
             continue
         comp["description"] = "Missing"
     return components
@@ -570,6 +576,7 @@ def main() -> int:
     # This helps for modules that don't participate in the sbom_metadata
     # extension (for example, transitive Bazel modules like boost.*).
     module_lockfiles = data.get("module_lockfiles", [])
+    lockfiles = read_module_lockfiles(module_lockfiles)
     registry_sources = None
     if args.registry_cache:
         with open(args.registry_cache, encoding="utf-8") as f:
@@ -579,10 +586,22 @@ def main() -> int:
                 "Registry cache must be a JSON object mapping URLs to source.json text"
             )
     if module_lockfiles:
-        lock_modules = parse_module_lockfiles(module_lockfiles, registry_sources)
+        if metadata.get("git_discovery_incomplete"):
+            print(
+                "WARNING: Git discovery is incomplete; retaining registry metadata "
+                "for modules without an identified Git override",
+                file=sys.stderr,
+            )
+        lock_modules = parse_module_lockfiles(
+            module_lockfiles, registry_sources, lockfiles=lockfiles
+        )
         if "modules" not in metadata:
             metadata["modules"] = {}
         for name, mod_data in lock_modules.items():
+            if name in metadata.get("git_overrides", {}):
+                # Registry candidates cannot supply a declared version or source
+                # for a dependency that the root module replaces with Git.
+                continue
             if name not in metadata["modules"]:
                 metadata["modules"][name] = mod_data
             else:
@@ -630,6 +649,10 @@ def main() -> int:
             metadata["crates"] = {}
         for name, cache_data in crates_cache.items():
             metadata["crates"].setdefault(name, cache_data)
+
+    metadata["crate_sources"] = parse_module_bazel_locks(
+        module_lockfiles, lockfiles=lockfiles
+    )
 
     components = list(python_cache.values())
     components.extend(collect_java_file_components(data.get("java_files", [])))
@@ -781,6 +804,11 @@ def filter_repos(repos: list[str], exclude_patterns: list[str]) -> list[str]:
     return filtered
 
 
+def _crate_names(name: str) -> tuple[str, ...]:
+    """Keep canonical spelling first while accepting legacy annotation names."""
+    return tuple(dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-"))))
+
+
 def _get_crate_metadata(
     crates: dict[str, Any],
     name: str,
@@ -795,21 +823,14 @@ def _get_crate_metadata(
             "+", "-"
         ):
             base = dict(_get_crate_metadata(crates, name, exact_version))
-            for key in (name, name.replace("-", "_")):
+            for key in _crate_names(name):
                 manual = crates.get(key, {})
                 if manual.get("version") == exact_version:
-                    for field in (
-                        "cpe",
-                        "aliases",
-                        "pedigree_ancestors",
-                        "pedigree_descendants",
-                        "pedigree_variants",
-                        "pedigree_notes",
-                    ):
+                    for field in _IDENTITY_FIELDS:
                         if field in manual:
                             base[field] = manual[field]
             return {**base, **repo_meta}
-    names = (name, name.replace("-", "_"))
+    names = _crate_names(name)
     if version is not None:
         for key in [f"{n}@{version}" for n in names] + list(names):
             entry = crates.get(key, {})
@@ -851,37 +872,71 @@ def _build_crate_result(
     result: dict[str, Any] = {
         "name": crate_name,
         "version": version,
-        "purl": f"pkg:cargo/{crate_name}@{version}",
         "type": "library",
-        "source": "crates.io",
         "bazel_repository": repository,
+        "ecosystem": "cargo",
     }
-    if crate_meta.get("license"):
-        result["license"] = crate_meta["license"]
-    if crate_meta.get("description"):
-        result["description"] = crate_meta["description"]
-    if crate_meta.get("supplier"):
-        result["supplier"] = crate_meta["supplier"]
-    if crate_meta.get("cpe"):
-        result["cpe"] = crate_meta["cpe"]
-    if crate_meta.get("aliases"):
-        result["aliases"] = crate_meta["aliases"]
-    if crate_meta.get("pedigree_ancestors"):
-        result["pedigree_ancestors"] = crate_meta["pedigree_ancestors"]
-    if crate_meta.get("pedigree_descendants"):
-        result["pedigree_descendants"] = crate_meta["pedigree_descendants"]
-    if crate_meta.get("pedigree_variants"):
-        result["pedigree_variants"] = crate_meta["pedigree_variants"]
-    if crate_meta.get("pedigree_notes"):
-        result["pedigree_notes"] = crate_meta["pedigree_notes"]
-    if crate_meta.get("repository"):
-        result["url"] = crate_meta["repository"]
-    if crate_meta.get("checksum"):
-        result["checksum"] = crate_meta["checksum"]
+    result.update(
+        {
+            field: crate_meta[field]
+            for field in ("license", "description", "supplier", *_IDENTITY_FIELDS)
+            if crate_meta.get(field)
+        }
+    )
+    result.update(crate_source_identity(crate_name, version, crate_meta))
+    if not result.get("checksum"):
+        result.pop("checksum", None)
     return result
 
 
 def resolve_component(
+    repo_name: str, metadata: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Apply authoritative source identity after collecting package annotations."""
+    result = _resolve_component(repo_name, metadata)
+    if result is None:
+        return None
+    name = repo_name.rstrip("+")
+    git = metadata.get("git_overrides", {}).get(name)
+    if git is None:
+        git = metadata.get("git_repositories", {}).get(name)
+        if git:
+            result["version"] = (
+                git.get("tag") or git.get("commit") or result.get("version", "unknown")
+            )
+    if git:
+        result["name"] = name
+        result.update(git_identity(result.get("version", "unknown"), git))
+        result.pop("checksum", None)
+        explicit = metadata.get("licenses", {}).get(name, {}).get("purl", "")
+        tagged = metadata.get("git_repositories", {}).get(name, {})
+        if not explicit and tagged.get("purl_explicit"):
+            explicit = tagged.get("purl", "")
+        if explicit:
+            result["purl"] = explicit
+    crate = metadata.get("crate_sources", {}).get(repo_name)
+    if crate:
+        if not crate.get("version_from_repository", True):
+            result["version"] = crate["version"]
+        result.update(crate_source_identity(result["name"], result["version"], crate))
+    if result.get("ecosystem") == "cargo":
+        # Extension annotations are explicit; intermediate collector PURLs are not.
+        names = _crate_names(result["name"])
+        for key in [n + "@" + result["version"] for n in names] + list(names):
+            annotation = metadata.get("crates", {}).get(key, {})
+            if "purl_explicit" in annotation and annotation.get(
+                "version", "unknown"
+            ) in ("", "unknown", result["version"]):
+                for field in ("license", "supplier", *_IDENTITY_FIELDS):
+                    if annotation.get(field):
+                        result[field] = annotation[field]
+                if annotation["purl_explicit"]:
+                    result["purl"] = annotation["purl"]
+                break
+    return result
+
+
+def _resolve_component(
     repo_name: str, metadata: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Resolve repository to component with version and PURL.
@@ -896,6 +951,16 @@ def resolve_component(
     # Normalize repo name - bzlmod adds "+" suffix to module repos
     normalized_name = repo_name.rstrip("+")
 
+    locked = metadata.get("crate_sources", {}).get(repo_name)
+    if locked and locked.get("name"):
+        name, version = locked["name"], locked["version"]
+        crate_meta = _get_crate_metadata(
+            metadata.get("crates", {}), name, version, repo_name
+        )
+        return _build_crate_result(
+            name, crate_meta.get("version", version), crate_meta, repo_name
+        )
+
     # Check if it's a bazel_dep module
     modules = metadata.get("modules", {})
     if normalized_name in modules:
@@ -903,11 +968,7 @@ def resolve_component(
         version = mod.get("version", "unknown")
         purl = mod.get("purl", "")
         if not purl or purl.endswith("@unknown"):
-            purl = (
-                f"pkg:github/eclipse-score/{normalized_name}@{version}"
-                if normalized_name.startswith("score_")
-                else f"pkg:generic/{normalized_name}@{version}"
-            )
+            purl = f"pkg:generic/{normalized_name}@{version}"
         result: dict[str, Any] = {
             "name": normalized_name,
             "version": version,
@@ -935,12 +996,6 @@ def resolve_component(
                 result["supplier"] = "Eclipse Foundation"
             if not result.get("license"):
                 result["license"] = "Apache-2.0"
-            if not result.get("url"):
-                result["url"] = f"https://github.com/eclipse-score/{normalized_name}"
-            if result.get("purl", "").startswith(f"pkg:generic/{normalized_name}@"):
-                result["purl"] = (
-                    f"pkg:github/eclipse-score/{normalized_name}@{result['version']}"
-                )
 
         return result
 
@@ -986,9 +1041,6 @@ def resolve_component(
             "pedigree_variants": repo.get("pedigree_variants", []),
             "pedigree_notes": repo.get("pedigree_notes", ""),
         }
-        commit_date = repo.get("commit_date", "")
-        if result.get("version") in ("unknown", "") and commit_date:
-            result["version"] = commit_date
         return result
 
     # Check if it's a crate from the metadata cache
@@ -996,24 +1048,11 @@ def resolve_component(
     crates = metadata.get("crates", {})
     crate = _get_crate_metadata(crates, normalized_name)
     if crate:
-        result = {
-            "name": normalized_name,
-            "version": crate.get("version", "unknown"),
-            "purl": crate.get("purl", f"pkg:cargo/{normalized_name}@unknown"),
-            "type": "library",
-            "source": "crates.io",
-            "license": crate.get("license", ""),
-            "description": crate.get("description", ""),
-            "supplier": crate.get("supplier", ""),
-            "cpe": crate.get("cpe", ""),
-            "aliases": crate.get("aliases", []),
-            "pedigree_ancestors": crate.get("pedigree_ancestors", []),
-            "pedigree_descendants": crate.get("pedigree_descendants", []),
-            "pedigree_variants": crate.get("pedigree_variants", []),
-            "pedigree_notes": crate.get("pedigree_notes", ""),
-        }
-        if crate.get("checksum"):
-            result["checksum"] = crate["checksum"]
+        result = _build_crate_result(
+            normalized_name, crate.get("version", "unknown"), crate, repo_name
+        )
+        if crate.get("purl") and result["source"] != "git":
+            result["purl"] = crate["purl"]
         return result
 
     # Handle score_ prefixed repos that might be modules
@@ -1021,11 +1060,11 @@ def resolve_component(
         return {
             "name": normalized_name,
             "version": "unknown",
-            "purl": f"pkg:github/eclipse-score/{normalized_name}@unknown",
+            "purl": "",
             "type": "library",
             "supplier": "Eclipse Foundation",
             "license": "Apache-2.0",
-            "url": f"https://github.com/eclipse-score/{normalized_name}",
+            "url": "",
             "cpe": "",
             "aliases": [],
             "pedigree_ancestors": [],
@@ -1034,77 +1073,42 @@ def resolve_component(
             "pedigree_notes": "",
         }
 
-    # Handle crate universe repos - bzlmod format
-    # e.g., rules_rust++crate+crate_index__serde-1.0.228
-    # e.g., rules_rust++crate+crate_index__iceoryx2-qnx8-0.7.0
-    cached_crates = metadata.get("crates", {})
-
+    # Try canonical repositories first, then legacy crate-universe names.
+    crate_parts = []
     if "crate_index__" in repo_name or "crate+" in repo_name:
-        # Strip the canonical repository prefix and the crate hub name.
-        crate_part = repo_name.rsplit("+", 1)[-1].split("__", 1)[-1]
-
-        # Parse name-version format (e.g., "serde-1.0.228")
-        # Handle complex names like "iceoryx2-qnx8-0.7.0" where last part is version
-        parts = crate_part.split("-")
-        if len(parts) >= 2:
-            # Find the version part (starts with a digit)
-            version_idx = -1
-            for i, part in enumerate(parts):
-                if part and part[0].isdigit():
-                    version_idx = i
-                    break
-
-            if version_idx > 0:
-                crate_name = "-".join(parts[:version_idx]).replace("_", "-")
-                version = "-".join(parts[version_idx:])
-
-                # Look up crate metadata from cache
-                # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = _get_crate_metadata(
-                    cached_crates, crate_name, version, repo_name
-                )
-                return _build_crate_result(
-                    crate_name,
-                    crate_meta.get("version", version),
-                    crate_meta,
-                    repo_name,
-                )
-
-    # Handle legacy crate universe format (e.g., crates_io__tokio-1.10.0)
+        crate_parts.append(repo_name.rsplit("+", 1)[-1].split("__", 1)[-1])
     if repo_name.startswith("crates_io__") or "_crates__" in repo_name:
-        parts = repo_name.split("__")
-        if len(parts) >= 2:
-            crate_info = parts[-1]
-            match = re.fullmatch(r"(.+?)-(\d+\.\d+\.\d+.*)", crate_info)
-            if match:
-                crate_name = match.group(1).replace("_", "-")
-                version = match.group(2)
+        crate_parts.append(repo_name.rsplit("__", 1)[-1])
 
-                # Look up crate metadata from cache
-                # Cargo.lock uses underscores, Bazel uses hyphens — try both
-                crate_meta = _get_crate_metadata(
-                    cached_crates, crate_name, version, repo_name
-                )
-                return _build_crate_result(
-                    crate_name,
-                    crate_meta.get("version", version),
-                    crate_meta,
-                    repo_name,
-                )
+    for crate_part in crate_parts:
+        match = re.fullmatch(r"(.+?)-(\d+\.\d+\.\d+.*)", crate_part)
+        if match:
+            crate_name, version = match.groups()
+            crate_meta = _get_crate_metadata(crates, crate_name, version, repo_name)
+            return _build_crate_result(
+                crate_name, crate_meta.get("version", version), crate_meta, repo_name
+            )
 
     # Check if repo is a sub-library of a known parent (e.g., boost.config+ -> boost)
     # rules_boost splits Boost into individual repos like boost.config+, boost.assert+, etc.
     if "." in normalized_name:
         parent_name = normalized_name.split(".")[0].rstrip("+")
-        # Look up parent in all metadata sources (modules, http_archives, git_repos, licenses)
+        if parent_name in metadata.get("git_overrides", {}) or parent_name in git_repos:
+            # A dotted name does not prove this repository came from the parent's
+            # checkout. Its own source metadata, when available, wins above.
+            return {
+                "name": normalized_name,
+                "version": "unknown",
+                "purl": "",
+                "type": "library",
+            }
+        # Look up parent annotations without attributing a Git checkout to a child.
         licenses = metadata.get("licenses", {})
         parent = None
         if parent_name in modules:
             parent = modules[parent_name]
         elif parent_name in http_archives:
             parent = http_archives[parent_name]
-        elif parent_name in git_repos:
-            parent = git_repos[parent_name]
         elif parent_name in licenses:
             parent = licenses[parent_name]
         if parent:
@@ -1134,6 +1138,19 @@ def resolve_component(
     }
 
 
+def _same_crate_source(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Require content or pinned Git evidence before merging different hubs."""
+    if first.get("source_info", "") != second.get("source_info", ""):
+        return False
+    if first.get("source") == "git" or second.get("source") == "git":
+        return (
+            first.get("source") == second.get("source") == "git"
+            and bool(first.get("download_location"))
+            and first["download_location"] == second.get("download_location")
+        )
+    return bool(first.get("checksum")) and first["checksum"] == second.get("checksum")
+
+
 def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge missing metadata from duplicates within the same ecosystem.
 
@@ -1157,6 +1174,7 @@ def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, A
                 key[2] == "cargo"
                 and all(repositories)
                 and repositories[0] != repositories[1]
+                and not _same_crate_source(seen[key], comp)
             ):
                 sources = ", ".join(sorted(repo or "unknown" for repo in repositories))
                 raise ValueError(

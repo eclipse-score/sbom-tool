@@ -34,7 +34,8 @@ resolve_component() — all repo-type branches
   - Legacy crates_io__NAME-VERSION format + metadata enrichment.
   - score_-prefixed repos → Eclipse Foundation supplier.
   - Dot sub-library (boost.config+) inherits version/license/checksum from the
-    parent entry (works for modules, http_archives, and git_repositories).
+    parent entry (modules and http_archives). Git parent names do not prove
+    that the child came from the same checkout.
   - Unknown repos → placeholder dict with version = "unknown"; never None.
   - Return type is always dict, never None, for any input.
 
@@ -306,8 +307,8 @@ class TestResolveComponentGitRepository(unittest.TestCase):
         self.assertEqual(comp["version"], "abc1234")
         self.assertEqual(comp["url"], "https://github.com/example/my_lib")
 
-    def test_commit_date_used_when_version_unknown(self):
-        """If version is 'unknown', commit_date provides the version string."""
+    def test_commit_date_is_not_a_version(self):
+        """A date alone cannot identify a revision."""
         meta = self._meta(
             my_lib={
                 "version": "unknown",
@@ -317,7 +318,8 @@ class TestResolveComponentGitRepository(unittest.TestCase):
             }
         )
         comp = resolve_component("my_lib", meta)
-        self.assertEqual(comp["version"], "2024-01-15")
+        self.assertEqual(comp["version"], "unknown")
+        self.assertFalse(comp["purl"])
 
     def test_commit_date_not_used_when_version_known(self):
         meta = self._meta(
@@ -549,7 +551,8 @@ class TestResolveComponentSpecialCases(unittest.TestCase):
         comp = resolve_component("score_communication", meta)
         self.assertIsNotNone(comp)
         self.assertEqual(comp["name"], "score_communication")
-        self.assertIn("eclipse-score", comp["purl"])
+        self.assertFalse(comp["purl"])
+        self.assertFalse(comp["url"])
         self.assertEqual(comp["supplier"], "Eclipse Foundation")
 
     def test_dot_sub_library_inherits_from_parent_module(self):
@@ -914,8 +917,8 @@ class TestParseModuleLockfiles(unittest.TestCase):
         sb = result["score_baselibs"]
         self.assertEqual(sb["version"], "0.2.13")
         self.assertNotIn("sha256", sb)
-        self.assertEqual(sb["purl"], "pkg:github/eclipse-score/score_baselibs@0.2.13")
-        self.assertEqual(sb["url"], "https://github.com/eclipse-score/score_baselibs")
+        self.assertEqual(sb["purl"], "pkg:generic/score_baselibs@0.2.13")
+        self.assertNotIn("url", sb)
 
 
 # ---------------------------------------------------------------------------

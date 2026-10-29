@@ -219,6 +219,8 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     name = component.get("name", "unknown")
     version = component.get("version", "unknown")
     purl = component.get("purl", "")
+    if purl.split("?", 1)[0].split("#", 1)[0].endswith("@unknown"):
+        purl = ""
     license_id = _normalize_spdx_license(component.get("license", ""))
     description = component.get("description", "")
     supplier = component.get("supplier", "")
@@ -231,14 +233,21 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     pedigree_ancestors = component.get("pedigree_ancestors", [])
     pedigree_descendants = component.get("pedigree_descendants", [])
     pedigree_variants = component.get("pedigree_variants", [])
-    pedigree_notes = component.get("pedigree_notes", "")
+    pedigree_notes = "\n".join(
+        filter(
+            None,
+            [component.get("pedigree_notes", ""), component.get("source_info", "")],
+        )
+    )
 
     cdx_comp: dict[str, Any] = {
         "type": _map_type_to_cdx_type(comp_type),
         "name": name,
-        "version": version,
         "bom-ref": _generate_bom_ref(name, version),
     }
+
+    if version not in ("", "unknown"):
+        cdx_comp["version"] = version
 
     # Add description
     if description:
@@ -291,14 +300,14 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     external_refs = []
 
     # Add download/source URL
-    if url:
+    if url and source != "git":
         external_refs.append(
             {
                 "type": "distribution",
                 "url": url,
             }
         )
-    elif source == "crates.io":
+    elif source == "crates.io" and version not in ("", "unknown"):
         external_refs.append(
             {
                 "type": "distribution",
@@ -311,7 +320,7 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
         external_refs.append(
             {
                 "type": "vcs",
-                "url": url,
+                "url": component.get("download_location") or url,
             }
         )
 

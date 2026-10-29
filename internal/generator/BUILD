@@ -27,6 +27,8 @@ py_binary(
     deps = [
         ":cyclonedx_formatter",
         ":registry_metadata",
+        ":source_identity",
+        ":source_metadata",
         ":spdx_formatter",
         ":utils",
     ],
@@ -38,6 +40,8 @@ py_library(
     deps = [
         ":cyclonedx_formatter",
         ":registry_metadata",
+        ":source_identity",
+        ":source_metadata",
         ":spdx_formatter",
         ":utils",
     ],
@@ -63,4 +67,15 @@ py_library(
     name = "cyclonedx_formatter",
     srcs = ["cyclonedx_formatter.py"],
     deps = [":utils"],
+)
+
+py_library(
+    name = "source_metadata",
+    srcs = ["source_metadata.py"],
+)
+
+py_library(
+    name = "source_identity",
+    srcs = ["source_identity.py"],
+    deps = [":source_metadata"],
 )

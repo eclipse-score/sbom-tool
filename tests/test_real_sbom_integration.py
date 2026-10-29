@@ -178,7 +178,7 @@ class TestRealSbomGeneration(unittest.TestCase):
             self.assertNotIn(sid, all_spdx_ids, f"Duplicate SPDXID: {sid!r}")
             all_spdx_ids.add(sid)
 
-            self.assertIn("versionInfo", pkg, f"Missing versionInfo on {name!r}")
+            self.assertNotEqual(pkg.get("versionInfo"), "unknown")
             self.assertIn(
                 "downloadLocation", pkg, f"Missing downloadLocation on {name!r}"
             )
@@ -304,7 +304,7 @@ class TestRealSbomGeneration(unittest.TestCase):
             name = comp.get("name", "")
             self.assertTrue(name, f"Component name must not be empty: {comp}")
             self.assertIn("type", comp, f"Missing type on {name!r}")
-            self.assertIn("version", comp, f"Missing version on {name!r}")
+            self.assertNotEqual(comp.get("version"), "unknown")
             self.assertIn("bom-ref", comp, f"Missing bom-ref on {name!r}")
             self.assertIn(
                 comp["type"],

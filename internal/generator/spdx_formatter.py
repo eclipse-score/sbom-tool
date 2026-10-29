@@ -186,6 +186,8 @@ def _create_spdx_package(
     name = component.get("name", "unknown")
     version = component.get("version", "unknown")
     purl = component.get("purl", "")
+    if purl.split("?", 1)[0].split("#", 1)[0].endswith("@unknown"):
+        purl = ""
     license_id = _default_score_license(name, component.get("license", ""))
     description = component.get("description", "")
     supplier = component.get("supplier", "")
@@ -195,21 +197,20 @@ def _create_spdx_package(
     spdx_id = f"SPDXRef-{_sanitize_id(name)}-{_sanitize_id(version)}"
 
     # Determine download location
-    url = component.get("url", "")
+    url = component.get("download_location") or component.get("url", "")
     source = component.get("source", "")
-    if url:
+    if source == "git":
+        download_location = component.get("download_location") or "NOASSERTION"
+    elif url:
         download_location = url
-    elif source == "crates.io":
+    elif source == "crates.io" and version not in ("", "unknown"):
         download_location = f"https://crates.io/crates/{name}/{version}"
-    elif name.startswith("score_"):
-        download_location = f"https://github.com/eclipse-score/{name}"
     else:
         download_location = "NOASSERTION"
 
     package: dict[str, Any] = {
         "SPDXID": spdx_id,
         "name": name,
-        "versionInfo": version,
         "downloadLocation": download_location,
         "primaryPackagePurpose": _map_type_to_purpose(comp_type),
         "filesAnalyzed": False,
@@ -217,6 +218,11 @@ def _create_spdx_package(
         "licenseDeclared": license_id if license_id else "NOASSERTION",
         "copyrightText": "NOASSERTION",
     }
+
+    if version not in ("", "unknown"):
+        package["versionInfo"] = version
+    if component.get("source_info"):
+        package["sourceInfo"] = component["source_info"]
 
     if checksum:
         package["checksums"] = [{"algorithm": "SHA256", "checksumValue": checksum}]
