@@ -405,9 +405,18 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             ):
                 with self.subTest(inputs=inputs):
                     cache = generate_cache(**inputs)
-                    self.assertEqual(set(cache), {f"shlex@{v}" for v in versions})
-                    for version, (checksum, license_expr) in versions.items():
-                        entry = cache[f"shlex@{version}"]
+                    expected = set()
+                    if inputs.get("cargo_lock_path"):
+                        expected.update(f"shlex@{v}" for v in versions)
+                    if inputs.get("module_lock_paths"):
+                        expected.update(
+                            f"repo:rules_rust++crate+crate_index__shlex-{v}"
+                            for v in versions
+                        )
+                    self.assertEqual(set(cache), expected)
+                    for entry in cache.values():
+                        version = entry["version"]
+                        checksum, license_expr = versions[version]
                         self.assertEqual(entry["checksum"], checksum)
                         self.assertEqual(entry["license"], license_expr)
                         self.assertEqual(entry["purl"], f"pkg:cargo/shlex@{version}")
@@ -437,9 +446,10 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             module_lock_paths=[module_lock], use_dash_license_scan=False
         )
 
-        self.assertEqual(cache["serde@1.0.228"]["license"], "MIT OR Apache-2.0")
-        self.assertEqual(cache["serde@1.0.228"]["description"], "Serde framework")
-        self.assertEqual(cache["serde@1.0.228"]["supplier"], "serde-rs")
+        entry = cache["repo:rules_rust++crate+crate_index__serde-1.0.228"]
+        self.assertEqual(entry["license"], "MIT OR Apache-2.0")
+        self.assertEqual(entry["description"], "Serde framework")
+        self.assertEqual(entry["supplier"], "serde-rs")
 
     @mock.patch("scripts.generate_crates_metadata_cache.parse_dash_summary")
     @mock.patch("scripts.generate_crates_metadata_cache.run_dash_license_scan")
@@ -467,7 +477,10 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             module_lock_paths=[module_lock], use_dash_license_scan=True
         )
 
-        self.assertEqual(cache["serde@1.0.228"]["license"], "Apache-2.0")
+        self.assertEqual(
+            cache["repo:rules_rust++crate+crate_index__serde-1.0.228"]["license"],
+            "Apache-2.0",
+        )
 
     @mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")
     def test_fetch_one_crate_meta_uses_locked_version_for_license(self, mock_get):

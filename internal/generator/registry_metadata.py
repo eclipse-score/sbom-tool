@@ -19,6 +19,8 @@ import hashlib
 import json
 import re
 
+from internal.generator.reporting import redact_credentials
+
 
 def archive_metadata(source_text: str, expected_sha256: str) -> dict[str, str]:
     """Check source.json against the lockfile, then read the archive URL and hash.
@@ -65,8 +67,12 @@ def registry_source_hashes(lockfiles: list[str]) -> dict[str, str]:
             if digest == "not found":
                 continue
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise ValueError(f"Invalid registry metadata SHA-256 for {url}")
+                raise ValueError(
+                    f"Invalid registry metadata SHA-256 for {redact_credentials(url)}"
+                )
             if url in sources and sources[url] != digest:
-                raise ValueError(f"Conflicting registry metadata hashes for {url}")
+                raise ValueError(
+                    f"Conflicting registry metadata hashes for {redact_credentials(url)}"
+                )
             sources[url] = digest
     return sources

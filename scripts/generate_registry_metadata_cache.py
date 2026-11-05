@@ -25,6 +25,7 @@ from internal.generator.registry_metadata import (
     archive_metadata,
     registry_source_hashes,
 )
+from internal.generator.reporting import redact_credentials
 
 
 def generate_cache(lockfiles: list[str]) -> dict[str, str]:
@@ -37,7 +38,9 @@ def generate_cache(lockfiles: list[str]) -> dict[str, str]:
                 source_text = response.read().decode("utf-8")
             archive_metadata(source_text, sources[url])
         except (OSError, ValueError, urllib.error.URLError) as exc:
-            raise ValueError(f"Cannot verify registry metadata {url}: {exc}") from exc
+            raise ValueError(
+                redact_credentials(f"Cannot verify registry metadata {url}: {exc}")
+            ) from None
         return url, source_text
 
     with ThreadPoolExecutor(max_workers=8) as pool:

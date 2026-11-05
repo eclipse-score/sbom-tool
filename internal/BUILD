@@ -21,6 +21,7 @@ package(default_visibility = ["//visibility:public"])
 exports_files([
     "aspect.bzl",
     "metadata_rule.bzl",
+    "module_sources.bzl",
     "providers.bzl",
     "rules.bzl",
 ])
@@ -31,6 +32,7 @@ filegroup(
     srcs = [
         "aspect.bzl",
         "metadata_rule.bzl",
+        "module_sources.bzl",
         "providers.bzl",
         "rules.bzl",
     ],

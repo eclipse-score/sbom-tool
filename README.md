@@ -14,7 +14,9 @@ sbom_ext = use_extension("@score_sbom//:extensions.bzl", "sbom_metadata")
 use_repo(sbom_ext, "sbom_metadata")
 ```
 
-**For modules using `local_path_override` or `git_override`**, also add a `track_module` tag for each such module. Without this, their versions cannot be auto-detected and will appear as `unknown` in the SBOM. The extension reads the version directly from the module's own `MODULE.bazel` file:
+Git overrides are discovered automatically from the root module and its includes.
+Use `track_module` to read a dependency's declared version from its `MODULE.bazel`,
+including when using a local or Git override:
 
 ```starlark
 sbom_ext = use_extension("@score_sbom//:extensions.bzl", "sbom_metadata")
@@ -153,6 +155,9 @@ runs DASH license enrichment by default, which shells out to
 whenever `python_lockfiles` is used. `auto_crates_cache` does not have this
 dependency; it reads local crate manifests and uses the crates.io API.
 
+The first crate metadata run may take several minutes: crates.io requests are
+limited to one per second. Bazel reuses the cache while its inputs remain unchanged.
+
 If your environment blocks required network access, set `auto_cdxgen = False` and provide `cdxgen_sbom` explicitly.
 
 ### Open Point: Full Hermeticity
@@ -215,6 +220,25 @@ Generated in `bazel-bin/`:
 - **Crate manifests and crates.io API** — Rust licenses from local manifests first; API fallback, descriptions, and suppliers from crates.io
 - **cdxgen** — C++ dependency licenses, descriptions, and suppliers
 
+### Git dependencies
+
+Supply `module_lockfiles` for Rust source information, even when
+`auto_crates_cache = False`.
+
+- Git modules keep an available declared version. Empty, `unknown`, or `0.0.0`
+  versions fall back to the Git tag or full commit SHA. Rust crates keep their
+  crate version.
+- Git PURLs identify the pinned revision, for example
+  `pkg:github/qorix-group/iceoryx2@<commit>#iceoryx2-bb/lock-free`.
+- Source notes record revisions and patches. Child dependencies need their own
+  source information, they do not inherit a parent's Git revision.
+- Reports remove URL login credentials and recognized authentication parameters.
+  Patch commands are represented by hashes to avoid publishing embedded secrets.
+  Keep original lockfiles and metadata caches private; they retain source evidence.
+- Missing values are omitted or reported as `NOASSERTION` in SPDX. Local Git
+  paths remain in source notes without generated PURLs. Incomplete source
+  discovery produces warnings while conflicting dependency sources stop generation.
+
 ### Automated Metadata Sources
 
 All license, hash, supplier, and description values are derived from automated sources: `MODULE.bazel.lock`, registry metadata verified against that lockfile, `http_archive` rules, dash-license-scan (Python), crates.io API (Rust), and cdxgen (C++). Cache files such as `cpp_metadata.json` must never be hand-edited.
@@ -271,7 +295,8 @@ Different versions of a component are kept as separate SBOM entries. Bazel Rust
 caches use `repo:<repository>` keys to keep source metadata separate. Standalone
 lockfile collection uses `name@version` keys; older caches remain supported.
 Generation stops if the same crate name/version is selected from different Bazel
-repositories, because they may contain different sources.
+repositories unless their sources and modifications match, backed by the same
+archive checksum or full Git commit. A matching Git tag alone is not sufficient.
 
 ### License Data by Language
 
