@@ -6081,10 +6081,11 @@
     },
     "@@score_sbom+//:extensions.bzl%sbom_metadata": {
       "general": {
-        "bzlTransitiveDigest": "/s8LDzZJxY9dIwLPRqlySVQrYryzJRlpvjcyn+L2QPc=",
+        "bzlTransitiveDigest": "yMILe7GNX3N4kgmmSNIrsQpVM1BLB+E8wku7GCXr+Cs=",
         "usagesDigest": "oxNfvTiIHPb7gkLE1LTyczgvnkzAj4Qje7OCvAdzu2g=",
         "recordedFileInputs": {
-          "@@//MODULE.bazel": "9d53d2f3beab02277fd449500135aab28901c5cf01a50af10158be10b5f68b97"
+          "@@//MODULE.bazel": "9d53d2f3beab02277fd449500135aab28901c5cf01a50af10158be10b5f68b97",
+          "@@score_sbom+//MODULE.bazel": "f1586e6bc51c271b23c2d13afd3c2377fb89d2c4038ebbb783b71c0a86c20bd8"
         },
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -6092,7 +6093,7 @@
           "sbom_metadata": {
             "repoRuleId": "@@score_sbom+//:extensions.bzl%_sbom_metadata_repo",
             "attributes": {
-              "metadata_content": "{\"crates\":{},\"git_discovery_incomplete\":false,\"git_overrides\":{},\"git_repositories\":{},\"http_archives\":{},\"licenses\":{},\"modules\":{\"score_sbom_dummy_project\":{\"purl\":\"pkg:generic/score_sbom_dummy_project@0.1.0\",\"version\":\"0.1.0\"}}}",
+              "metadata_content": "{\"crates\":{},\"generator_version\":null,\"git_discovery_incomplete\":false,\"git_overrides\":{},\"git_repositories\":{},\"http_archives\":{},\"licenses\":{},\"modules\":{\"score_sbom_dummy_project\":{\"purl\":\"pkg:generic/score_sbom_dummy_project@0.1.0\",\"version\":\"0.1.0\"}}}",
               "tracked_modules": [
                 "score_sbom"
               ]

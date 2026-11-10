@@ -731,6 +731,7 @@ def main() -> int:
 
     # Get configuration
     config = data.get("config", {})
+    config["generator_version"] = generator_version(metadata)
 
     # Auto-detect component_version from metadata if not explicitly set
     component_name = config.get("component_name", "")
@@ -773,6 +774,19 @@ def main() -> int:
         )
 
     return 0
+
+
+def generator_version(metadata: dict[str, Any]) -> str:
+    """Return the released generator version or a development version.
+
+    Unreleased sources have no version in MODULE.bazel. A git_override still
+    names the exact revision.
+    """
+    if metadata.get("generator_version"):
+        return metadata["generator_version"]
+    git = metadata.get("git_overrides", {}).get("score_sbom", {})
+    revision = git.get("commit") or git.get("tag")
+    return f"0.0.0-dev+{revision}" if revision else "0.0.0-dev"
 
 
 def filter_repos(repos: list[str], exclude_patterns: list[str]) -> list[str]:

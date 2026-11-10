@@ -382,8 +382,12 @@ def _sbom_metadata_impl(module_ctx):
             if license_info.get("pedigree_notes"):
                 all_modules[name]["pedigree_notes"] = license_info["pedigree_notes"]
 
+    # Registry releases patch their version into this module's MODULE.bazel.
+    _, generator_version = _parse_version_from_module_bazel(module_ctx.read(Label("//:MODULE.bazel")))
+
     # Generate metadata JSON
     metadata_content = json.encode({
+        "generator_version": generator_version,
         "modules": all_modules,
         "git_overrides": git_overrides,
         "git_discovery_incomplete": git_discovery_incomplete,
