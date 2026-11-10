@@ -19,7 +19,7 @@ Document structure
   - spdxVersion = "SPDX-2.3", dataLicense = "CC0-1.0",
     SPDXID = "SPDXRef-DOCUMENT".
   - creationInfo: created timestamp, creators list contains
-    "Organization: <name>" and "Tool: score-sbom-generator".
+    "Organization: <name>" and "Tool: score-sbom-generator-<version>".
   - documentNamespace is present.
 
 Package representation
@@ -73,6 +73,7 @@ class TestSpdxFormatter(unittest.TestCase):
             "producer_name": "Eclipse Foundation",
             "producer_url": "https://eclipse.dev/score",
             "namespace": "https://eclipse.dev/score",
+            "generator_version": "0.1.1",
         }
         self.components = [
             {
@@ -111,7 +112,7 @@ class TestSpdxFormatter(unittest.TestCase):
         self.assertEqual(creation_info["created"], self.timestamp)
         creators = creation_info["creators"]
         self.assertIn("Organization: Eclipse Foundation", creators)
-        self.assertIn("Tool: score-sbom-generator", creators)
+        self.assertIn("Tool: score-sbom-generator-0.1.1", creators)
 
     def test_generate_spdx_components(self):
         """Test that components are properly added to SPDX."""

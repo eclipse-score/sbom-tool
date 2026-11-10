@@ -19,7 +19,7 @@ Document structure
   - bomFormat = "CycloneDX", specVersion = "1.6".
   - $schema URL uses https://.
   - serialNumber starts with "urn:uuid:".
-  - metadata: timestamp, component (name/version/type), tools present.
+  - metadata: timestamp, component (name/version/type), tool name and version.
 
 Component fields
   - name, version, type ("library"), purl, bom-ref all set correctly.
@@ -73,6 +73,7 @@ class TestCycloneDXFormatter(unittest.TestCase):
             "producer_name": "Eclipse Foundation",
             "producer_url": "https://eclipse.dev/score",
             "namespace": "https://eclipse.dev/score",
+            "generator_version": "0.1.1",
         }
         self.components = [
             {
@@ -110,6 +111,9 @@ class TestCycloneDXFormatter(unittest.TestCase):
         metadata = cdx["metadata"]
         self.assertEqual(metadata["timestamp"], self.timestamp)
         self.assertIn("tools", metadata)
+        tool = metadata["tools"]["components"][0]
+        self.assertEqual(tool["name"], "score-sbom-generator")
+        self.assertEqual(tool["version"], "0.1.1")
         self.assertIn("component", metadata)
 
         root_component = metadata["component"]

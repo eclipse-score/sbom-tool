@@ -20,6 +20,11 @@ filter_repos()
     of patterns — they are real dependencies, not build tools.
   - Multiple patterns are each applied independently.
 
+generator_version()
+  - Registry release: the version patched into MODULE.bazel is used.
+  - git_override: 0.0.0-dev+<commit or tag>.
+  - local_path_override or root module: 0.0.0-dev.
+
 resolve_component() — all repo-type branches
   - bazel_dep module  : version, PURL, sha256 → checksum, pedigree fields.
   - bzlmod "+" suffix : repo name "boost+" resolves to component name "boost".
@@ -78,6 +83,7 @@ main() — end-to-end integration
   - crate_universe repos resolve and appear in output.
   - Exclude patterns remove repos from output.
   - component_version is auto-detected from metadata["modules"] when not in config.
+  - metadata generator_version names the tool in both output files.
   - dep_module_files: MODULE.bazel version flows into output.
   - module_lockfiles: lockfile-derived version flows into output.
   - --crates-cache: external crate metadata cache enriches crate components.
@@ -102,6 +108,7 @@ from internal.generator.sbom_generator import (
     collect_java_file_components,
     deduplicate_components,
     filter_repos,
+    generator_version,
     main,
     mark_missing_cpp_descriptions,
     parse_module_bazel_files,
@@ -132,6 +139,34 @@ class TestJavaFileComponents(unittest.TestCase):
             components[0]["checksum"],
             "b05f25a893299cf4ef571b8283b4158bd6c7320b6c9733dd6f44b51a4142557c",
         )
+
+
+# ---------------------------------------------------------------------------
+# generator_version
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratorVersion(unittest.TestCase):
+    """generator_version() — how score_sbom was fetched decides the version."""
+
+    def test_registry_release_version(self):
+        self.assertEqual(generator_version({"generator_version": "0.1.1"}), "0.1.1")
+
+    def test_git_override_names_revision(self):
+        for git, expected in (
+            ({"commit": "4f940a2"}, "0.0.0-dev+4f940a2"),
+            ({"tag": "v0.1.1"}, "0.0.0-dev+v0.1.1"),
+        ):
+            with self.subTest(git=git):
+                metadata = {
+                    "generator_version": None,
+                    "git_overrides": {"score_sbom": git},
+                }
+                self.assertEqual(generator_version(metadata), expected)
+
+    def test_local_path_override_or_root_module(self):
+        self.assertEqual(generator_version({"generator_version": None}), "0.0.0-dev")
+        self.assertEqual(generator_version({}), "0.0.0-dev")
 
 
 # ---------------------------------------------------------------------------
@@ -1222,6 +1257,18 @@ class TestMain(unittest.TestCase):
             p for p in spdx["packages"] if p.get("SPDXID") == "SPDXRef-RootPackage"
         )
         self.assertEqual(root_pkg["versionInfo"], "2.5.0")
+
+    def test_generator_version_in_outputs(self):
+        """metadata generator_version names the tool in SPDX and CycloneDX."""
+        self._run(metadata={**self._DEFAULT_METADATA, "generator_version": "0.1.1"})
+        with open(self._spdx_path) as f:
+            spdx = json.load(f)
+        with open(self._cdx_path) as f:
+            cdx = json.load(f)
+        self.assertIn(
+            "Tool: score-sbom-generator-0.1.1", spdx["creationInfo"]["creators"]
+        )
+        self.assertEqual(cdx["metadata"]["tools"]["components"][0]["version"], "0.1.1")
 
     # -----------------------------------------------------------------------
     # dep_module_files

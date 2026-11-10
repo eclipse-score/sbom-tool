@@ -55,6 +55,7 @@ def generate_spdx(
     component_name = config.get("component_name", "unknown")
     component_version = config.get("component_version", "")
     producer_name = config.get("producer_name", "Eclipse Foundation")
+    generator_version = config.get("generator_version", "0.0.0-dev")
     component_license = _default_score_license(
         component_name, config.get("component_license", "")
     )
@@ -160,7 +161,7 @@ def generate_spdx(
             "created": timestamp,
             "creators": [
                 f"Organization: {producer_name}",
-                "Tool: score-sbom-generator",
+                f"Tool: score-sbom-generator-{generator_version}",
             ],
         },
         "packages": packages,

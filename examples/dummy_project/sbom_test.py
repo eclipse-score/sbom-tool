@@ -51,6 +51,8 @@ class SpdxOutputTest(unittest.TestCase):
         creation_info = self.doc["creationInfo"]
         self.assertTrue(creation_info["created"])
         self.assertTrue(creation_info["creators"])
+        # score_sbom comes from local_path_override, which has no release version.
+        self.assertIn("Tool: score-sbom-generator-0.0.0-dev", creation_info["creators"])
 
     def test_root_package_is_the_dummy_project(self):
         packages = {p["name"]: p for p in self.doc["packages"]}

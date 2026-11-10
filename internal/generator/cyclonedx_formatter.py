@@ -54,6 +54,7 @@ def generate_cyclonedx(
     component_version = config.get("component_version", "")
     producer_name = config.get("producer_name", "Eclipse Foundation")
     producer_url = config.get("producer_url", "")
+    generator_version = config.get("generator_version", "0.0.0-dev")
 
     _gh_match = re.match(
         r"https:\/\/github\.com\/([^\/?#]+)", redact_credentials(producer_url)
@@ -76,6 +77,7 @@ def generate_cyclonedx(
                     {
                         "type": "application",
                         "name": "score-sbom-generator",
+                        "version": generator_version,
                         "description": "Eclipse SCORE SBOM Generator (Bazel-native)",
                         "publisher": producer_name,
                     }
