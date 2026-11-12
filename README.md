@@ -255,7 +255,7 @@ Every component entry in the generated SBOM must include the following fields, a
 | Component version | `versionInfo` | `components[].version` | Extracted | Exact released version string used in the build. |
 | Component hash (SHA-256) | `checksums[SHA256]` | `components[].hashes` | Extracted | Hash of the package archive or file. Registry archive hashes come from `source.json.integrity`, after checking `source.json` against the lockfile. |
 | Software identifier (PURL) | `externalRefs[purl]` | `components[].purl` | Extracted | Package URL uniquely identifying the component by ecosystem, name, and version (e.g. `pkg:cargo/serde@1.0.228`). |
-| License expression | `licenseConcluded` | `components[].licenses` | Extracted | SPDX license expression concluded for this component (e.g. `Apache-2.0 OR MIT`). |
+| License expression | `licenseDeclared`, `licenseConcluded` | `components[].licenses` | Extracted | SPDX license expression the package states and the one concluded for it (e.g. `Apache-2.0 OR MIT`); see [Declared and Concluded Licenses](#declared-and-concluded-licenses). |
 | Dependency relationships | `relationships[DEPENDS_ON]` | `dependencies` | Extracted | Graph edges recording which component depends on which, enabling consumers to reason about transitive exposure. |
 | Supplier | `supplier` | `components[].supplier.name` | Extracted | Organisation or individual that distributes the component (e.g. the crates.io publisher name). |
 | Component description | `description` | `components[].description` | Extracted | Short human-readable summary of what the component does; set to `"Missing"` when no source can provide it. |
@@ -300,9 +300,43 @@ archive checksum or full Git commit. A matching Git tag alone is not sufficient.
 
 ### License Data by Language
 
-- **Rust**: Direct `package.license` expressions come from the selected crate's `Cargo.toml`. Missing expressions use an exact-version API fallback only for confirmed, unpatched crates.io sources. Workspace inheritance and `license-file` processing are deferred. The cache records `license_source` or an unresolved `license_error`. Description/supplier lookup still uses the API, including the existing base-name fallback for platform forks. Optional `dash-license-scan` remains available.
-- **Python**: Licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined), using `pypi/pypi/-/<name>/<version>` identifiers generated from pip-compile lockfiles. Descriptions and suppliers are not enriched yet.
-- **C++**: Licenses, descriptions, and suppliers via cdxgen source tree scan. There is no dash-license-scan integration for C++ — it does not support `pkg:generic/...` PURLs used by BCR modules. If cdxgen cannot resolve a component, its description is set to `"Missing"` and its license field is empty.
+- **Rust**: Direct `package.license` expressions come from the selected crate's `Cargo.toml`. Missing expressions use an exact-version API fallback only for confirmed, unpatched crates.io sources. Workspace inheritance and `license-file` processing are deferred. The cache records `license_source` or an unresolved `license_error`. Description/supplier lookup still uses the API, including the existing base-name fallback for platform forks. Optional `dash-license-scan` remains available and adds a concluded license.
+- **Python**: Concluded licenses via dash-license-scan (Eclipse Foundation + ClearlyDefined), using `pypi/pypi/-/<name>/<version>` identifiers generated from pip-compile lockfiles. Descriptions and suppliers are not enriched yet.
+- **C++**: Declared licenses, descriptions, and suppliers via cdxgen source tree scan. There is no dash-license-scan integration for C++ — it does not support `pkg:generic/...` PURLs used by BCR modules. If cdxgen cannot resolve a component, its description is set to `"Missing"` and its license field is empty.
+
+### Declared and Concluded Licenses
+
+SPDX 2.3 separates the license a package states (`licenseDeclared`) from the
+license the SBOM producer concludes (`licenseConcluded`).
+
+| Source | Reads | Gives |
+|---|---|---|
+| `Cargo.toml` | `package.license` of the selected crate | Declared |
+| crates.io | License of the exact version; only for confirmed, unpatched crates.io sources whose manifest has none | Declared |
+| cdxgen | Source tree scan, matched to a component by name (`auto_cdxgen` or `cdxgen_sbom`) | Declared |
+| `component_license` | The `sbom()` attribute, for the root package | Declared |
+| `sbom_ext` metadata | `license`, `http_archive` and `git_repository` tags in `MODULE.bazel` | Concluded |
+| dash-license-scan | Eclipse Foundation and ClearlyDefined data; Python by default, Rust only with `--use-dash-license-scan` | Concluded |
+| S-CORE default | `Apache-2.0` for `score_*` names | Concluded |
+| BCR table | `BCR_KNOWN_LICENSES`, by module or parent name | Concluded |
+
+The concluded license is the first of:
+
+1. `sbom_ext` metadata
+2. dash-license-scan
+3. The declared license
+4. The S-CORE default or the BCR table
+
+`licenseComments` names the source of the concluded license and compares it
+with the declared one: they match (the order of a flat `AND`/`OR` list does not
+count), the conclusion selects from the declared alternatives, or they differ.
+If no license was declared, the comment gives the reason the crate cache
+recorded.
+
+CycloneDX 1.6 holds one license expression per component. `licenses` holds the
+concluded license with `acknowledgement: concluded`. The declared license and
+the comment are the properties `score:license:declared` and
+`score:license:comments`.
 
 ### Output Format Versions
 
@@ -362,6 +396,7 @@ enrichment.
 | `test_bcr_known_licenses.py` | `test_bcr_known_licenses` | `BCR_KNOWN_LICENSES` table; `apply_known_licenses()` priority chain (5 levels); `resolve_component()` integration after license resolution |
 | `test_cpp_enrich_checksum.py` | `test_cpp_enrich_checksum` | `enrich_components_from_cpp_cache()` field propagation (checksum, normalised names, parent match); no-manual-curation rule on `cpp_metadata.json` |
 | `test_cyclonedx_formatter.py` | `test_cyclonedx_formatter` | CycloneDX 1.6 document structure; license encoding (single id vs compound expression); `or`/`and` normalisation; dependency graph; `_normalize_spdx_license()` |
+| `test_licenses.py` | `test_licenses` | Concluded-license priority in any collection order; SPDX `licenseDeclared`/`licenseConcluded`/`licenseComments`; CycloneDX `acknowledgement` and license properties; crate cache entries; cdxgen versus BCR defaults and `sbom_ext` metadata; duplicates; end-to-end output |
 | `test_spdx_formatter.py` | `test_spdx_formatter` | SPDX 2.3 document structure; PURL as externalRef; SHA-256 checksums; DESCRIBES/DEPENDS_ON relationships; `hasExtractedLicensingInfos` for `LicenseRef-*`; `_normalize_spdx_license()` |
 | `test_sbom_generator.py` | `test_sbom_generator` | `filter_repos()`; `resolve_component()` (all 8 repo-type branches); `deduplicate_components()`; `parse_module_bazel_files()`; `parse_module_lockfiles()`; `mark_missing_cpp_descriptions()`; `main()` end-to-end (15 scenarios: SPDX/CycloneDX output, BCR licenses, crate_universe, exclude patterns, version auto-detect, dep_module_files, module_lockfiles, --crates-cache, --cdxgen-sbom, output file selection) |
 | `test_registry_checksums.py` | `test_registry_checksums` | Correct archive hashes in both formats, invalid metadata, download failures, and version mismatches. Runs offline. |

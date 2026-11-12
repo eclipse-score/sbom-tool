@@ -53,10 +53,8 @@ Run          : bazel test //sbom/tests:test_spdx_formatter
 import unittest
 from datetime import datetime, timezone
 
-from internal.generator.spdx_formatter import (
-    generate_spdx,
-    _normalize_spdx_license,
-)
+from internal.generator.spdx_formatter import generate_spdx
+from internal.generator.utils import _normalize_spdx_license
 
 
 class TestSpdxFormatter(unittest.TestCase):
@@ -179,15 +177,23 @@ class TestSpdxFormatter(unittest.TestCase):
         self.assertEqual(len(packages), 1)
 
     def test_score_packages_default_to_apache_license(self):
-        """SCORE packages without license metadata default to Apache-2.0."""
+        """SCORE packages without license metadata conclude Apache-2.0.
+
+        The default is a conclusion. Nothing in the package declares it.
+        """
         config = {**self.config, "component_name": "score_persistency"}
         components = [{"name": "score_baselibs", "version": "0.2.13"}]
 
         spdx = generate_spdx(components, config, self.timestamp)
 
-        root_package, score_package = spdx["packages"]
-        self.assertEqual(root_package["licenseDeclared"], "Apache-2.0")
-        self.assertEqual(score_package["licenseDeclared"], "Apache-2.0")
+        for package in spdx["packages"]:
+            self.assertEqual(package["licenseConcluded"], "Apache-2.0")
+            self.assertEqual(package["licenseDeclared"], "NOASSERTION")
+            self.assertEqual(
+                package["licenseComments"],
+                "Concluded from the Eclipse S-CORE project default; "
+                "no declared license was found.",
+            )
 
     def test_component_license_overrides_score_default(self):
         """Explicit license metadata remains authoritative for SCORE packages."""

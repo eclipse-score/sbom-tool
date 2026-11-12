@@ -53,10 +53,8 @@ Run          : bazel test //sbom/tests:test_cyclonedx_formatter
 import unittest
 from datetime import datetime, timezone
 
-from internal.generator.cyclonedx_formatter import (
-    generate_cyclonedx,
-    _normalize_spdx_license,
-)
+from internal.generator.cyclonedx_formatter import generate_cyclonedx
+from internal.generator.utils import _normalize_spdx_license
 
 
 class TestCycloneDXFormatter(unittest.TestCase):

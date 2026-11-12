@@ -23,8 +23,8 @@ import re
 import uuid
 from typing import Any
 
+from internal.generator.licenses import root_license, spdx_license_fields
 from internal.generator.utils import (
-    _normalize_spdx_license,
     component_identity,
     distinct_component_ids,
 )
@@ -108,6 +108,11 @@ def generate_cyclonedx(
     # Clean up None values from metadata.component
     if cdx_doc["metadata"]["component"].get("purl") is None:
         del cdx_doc["metadata"]["component"]["purl"]
+    licenses, properties = _cdx_licenses(root_license(config))
+    if licenses:
+        cdx_doc["metadata"]["component"]["licenses"] = licenses
+    if properties:
+        cdx_doc["metadata"]["component"]["properties"] = properties
 
     # Add authors if provided
     authors = config.get("sbom_authors", [])
@@ -212,6 +217,33 @@ def generate_cyclonedx(
     return redact_credentials(cdx_doc)
 
 
+def _cdx_licenses(
+    component: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Return the concluded license entry and the license properties.
+
+    CycloneDX holds one license expression, so the declared license and
+    the explanation of the concluded one are properties.
+    """
+    fields = spdx_license_fields(component)
+    concluded = fields["licenseConcluded"]
+    licenses: list[dict[str, Any]] = []
+    if " AND " in concluded or " OR " in concluded or " WITH " in concluded:
+        # Compound SPDX expression must use "expression", not "license.id"
+        licenses = [{"expression": concluded, "acknowledgement": "concluded"}]
+    elif concluded != "NOASSERTION":
+        licenses = [{"license": {"id": concluded, "acknowledgement": "concluded"}}]
+    properties = [
+        {"name": f"score:license:{kind}", "value": fields[field]}
+        for kind, field in (
+            ("declared", "licenseDeclared"),
+            ("comments", "licenseComments"),
+        )
+        if fields.get(field, "NOASSERTION") != "NOASSERTION"
+    ]
+    return licenses, properties
+
+
 def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     """Create a CycloneDX component from component data.
 
@@ -226,7 +258,7 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     purl = component.get("purl", "")
     if purl.split("?", 1)[0].split("#", 1)[0].endswith("@unknown"):
         purl = ""
-    license_id = _normalize_spdx_license(component.get("license", ""))
+    licenses, license_properties = _cdx_licenses(component)
     description = component.get("description", "")
     supplier = component.get("supplier", "")
     comp_type = component.get("type", "library")
@@ -262,13 +294,8 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     if purl:
         cdx_comp["purl"] = purl
 
-    # Add license
-    if license_id:
-        if " AND " in license_id or " OR " in license_id:
-            # Compound SPDX expression must use "expression", not "license.id"
-            cdx_comp["licenses"] = [{"expression": license_id}]
-        else:
-            cdx_comp["licenses"] = [{"license": {"id": license_id}}]
+    if licenses:
+        cdx_comp["licenses"] = licenses
 
     # Add supplier
     if supplier:
@@ -287,10 +314,10 @@ def _create_cdx_component(component: dict[str, Any]) -> dict[str, Any]:
     if cpe:
         cdx_comp["cpe"] = cpe
 
-    if aliases:
-        cdx_comp["properties"] = [
-            {"name": "cdx:alias", "value": alias} for alias in aliases
-        ]
+    properties = [{"name": "cdx:alias", "value": alias} for alias in aliases]
+    properties += license_properties
+    if properties:
+        cdx_comp["properties"] = properties
 
     pedigree = _build_pedigree(
         pedigree_ancestors,

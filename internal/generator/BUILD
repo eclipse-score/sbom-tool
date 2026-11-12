@@ -26,6 +26,7 @@ py_binary(
     main = "sbom_generator.py",
     deps = [
         ":cyclonedx_formatter",
+        ":licenses",
         ":registry_metadata",
         ":reporting",
         ":source_identity",
@@ -40,6 +41,7 @@ py_library(
     srcs = ["sbom_generator.py"],
     deps = [
         ":cyclonedx_formatter",
+        ":licenses",
         ":registry_metadata",
         ":reporting",
         ":source_identity",
@@ -61,9 +63,16 @@ py_library(
 )
 
 py_library(
+    name = "licenses",
+    srcs = ["licenses.py"],
+    deps = [":utils"],
+)
+
+py_library(
     name = "spdx_formatter",
     srcs = ["spdx_formatter.py"],
     deps = [
+        ":licenses",
         ":reporting",
         ":utils",
     ],
@@ -73,6 +82,7 @@ py_library(
     name = "cyclonedx_formatter",
     srcs = ["cyclonedx_formatter.py"],
     deps = [
+        ":licenses",
         ":reporting",
         ":utils",
     ],
