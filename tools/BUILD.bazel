@@ -20,7 +20,8 @@
 # leaves the root package loadable by any consumer. The CI workflows pass the
 # target names explicitly.
 
-load("@score_tooling//:defs.bzl", "copyright_checker", "use_format_targets")
+load("@score_tooling//:defs.bzl", "copyright_checker")
+load("@score_tooling//third_party/format:macros.bzl", "use_format_targets")
 
 package(default_visibility = ["//visibility:public"])
 
