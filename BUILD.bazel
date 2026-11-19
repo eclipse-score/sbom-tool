@@ -31,7 +31,7 @@ exports_files([
     "MODULE.bazel",
 ])
 
-# Source directories handed to //tools:copyright-check as directory artifacts.
+# Source trees inspected by //tools:copyright-check.
 exports_files([
     ".github",
     "internal",
