@@ -295,9 +295,18 @@ class TestGitSources(unittest.TestCase):
                     self.assertEqual(
                         component.get(field) or "", clean.get(field) or "", field
                     )
-                self.assertEqual(component["license"], "MIT")
+                # The registry crate's license does not describe another source.
+                foreign = (
+                    key != "repo:" + REPO
+                    and cached.get("source") in REGISTRY_SOURCES
+                    and locked is not archive
+                )
+                self.assertEqual(component.get("license"), None if foreign else "MIT")
                 self.assertEqual(component["description"], "Cached description")
-                clean.update(license="MIT", description="Cached description")
+                clean.update(
+                    {f: v for f, v in component.items() if f.startswith("license")},
+                    description="Cached description",
+                )
                 for formatter, field in (
                     (generate_spdx, "packages"),
                     (generate_cyclonedx, "components"),
@@ -353,12 +362,22 @@ class TestGitSources(unittest.TestCase):
                             cdx = generate_cyclonedx(
                                 [component], {}, "2026-01-01T00:00:00Z"
                             )["components"][0]
-                            self.assertEqual(spdx["licenseDeclared"], "MIT")
+                            # A user annotation is a conclusion, not a declaration.
+                            self.assertEqual(spdx["licenseConcluded"], "MIT")
+                            self.assertEqual(spdx["licenseDeclared"], "NOASSERTION")
                             self.assertEqual(
                                 spdx["supplier"], "Organization: Annotated supplier"
                             )
                             self.assertEqual(
-                                cdx["licenses"], [{"license": {"id": "MIT"}}]
+                                cdx["licenses"],
+                                [
+                                    {
+                                        "license": {
+                                            "id": "MIT",
+                                            "acknowledgement": "concluded",
+                                        }
+                                    }
+                                ],
                             )
                             self.assertEqual(cdx["cpe"], annotation["cpe"])
                             self.assertIn(
@@ -2244,9 +2263,13 @@ class TestGitSources(unittest.TestCase):
             )
             self.assertIn(component["bom-ref"], dependency["dependsOn"])
             if name == "score_time":
-                self.assertEqual(parent["licenseDeclared"], "MIT")
+                self.assertEqual(parent["licenseConcluded"], "MIT")
+                self.assertEqual(parent["licenseDeclared"], "NOASSERTION")
                 self.assertEqual(parent["supplier"], "Organization: Annotated supplier")
-                self.assertEqual(parent_cdx["licenses"], [{"license": {"id": "MIT"}}])
+                self.assertEqual(
+                    parent_cdx["licenses"],
+                    [{"license": {"id": "MIT", "acknowledgement": "concluded"}}],
+                )
 
     def test_equivalent_mirrors_merge_but_changed_contents_or_patches_fail(self):
         attrs = {

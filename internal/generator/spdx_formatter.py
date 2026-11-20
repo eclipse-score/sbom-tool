@@ -23,8 +23,8 @@ import re
 import uuid
 from typing import Any
 
+from internal.generator.licenses import root_license, spdx_license_fields
 from internal.generator.utils import (
-    _normalize_spdx_license,
     component_identity,
     distinct_component_ids,
 )
@@ -56,9 +56,6 @@ def generate_spdx(
     component_version = config.get("component_version", "")
     producer_name = config.get("producer_name", "Eclipse Foundation")
     generator_version = config.get("generator_version", "0.0.0-dev")
-    component_license = _default_score_license(
-        component_name, config.get("component_license", "")
-    )
 
     doc_uuid = uuid.uuid4()
 
@@ -75,8 +72,7 @@ def generate_spdx(
         "supplier": f"Organization: {producer_name}",
         "primaryPackagePurpose": "APPLICATION",
         "filesAnalyzed": False,
-        "licenseConcluded": component_license or "NOASSERTION",
-        "licenseDeclared": component_license or "NOASSERTION",
+        **spdx_license_fields(root_license(config)),
         "copyrightText": "NOASSERTION",
     }
     packages.append(root_package)
@@ -190,7 +186,6 @@ def _create_spdx_package(
     purl = component.get("purl", "")
     if purl.split("?", 1)[0].split("#", 1)[0].endswith("@unknown"):
         purl = ""
-    license_id = _default_score_license(name, component.get("license", ""))
     description = component.get("description", "")
     supplier = component.get("supplier", "")
     comp_type = component.get("type", "library")
@@ -216,8 +211,7 @@ def _create_spdx_package(
         "downloadLocation": download_location,
         "primaryPackagePurpose": _map_type_to_purpose(comp_type),
         "filesAnalyzed": False,
-        "licenseConcluded": license_id if license_id else "NOASSERTION",
-        "licenseDeclared": license_id if license_id else "NOASSERTION",
+        **spdx_license_fields(component),
         "copyrightText": "NOASSERTION",
     }
 
@@ -246,14 +240,6 @@ def _create_spdx_package(
         ]
 
     return package, spdx_id
-
-
-def _default_score_license(name: str, license_id: str) -> str:
-    """Use the SCORE default license when a score module has no metadata."""
-    normalized = _normalize_spdx_license(license_id)
-    if not normalized and name.startswith("score_"):
-        return "Apache-2.0"
-    return normalized
 
 
 def _map_type_to_purpose(comp_type: str) -> str:

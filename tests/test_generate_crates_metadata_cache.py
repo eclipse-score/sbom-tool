@@ -462,7 +462,7 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
         _mock_run_dash,
         mock_parse_dash,
     ):
-        """When enabled, dash-license-scan license must override crates.io license."""
+        """dash-license-scan concludes a license; crates.io keeps the declared one."""
         mock_fetch.return_value = {
             "serde@1.0.228": {
                 "license": "MIT OR Apache-2.0",
@@ -477,9 +477,12 @@ class TestCratesIoLicenseFallback(unittest.TestCase):
             module_lock_paths=[module_lock], use_dash_license_scan=True
         )
 
-        self.assertEqual(
-            cache["repo:rules_rust++crate+crate_index__serde-1.0.228"]["license"],
-            "Apache-2.0",
+        entry = cache["repo:rules_rust++crate+crate_index__serde-1.0.228"]
+        self.assertEqual(entry["license"], "MIT OR Apache-2.0")
+        self.assertEqual(entry["license_concluded"], "Apache-2.0")
+        self.assertNotIn("license_error", entry)
+        mock_fetch.assert_called_once_with(
+            [("serde", "1.0.228")], license_lookups={("serde", "1.0.228")}
         )
 
     @mock.patch("scripts.generate_crates_metadata_cache._cratesio_get")

@@ -493,6 +493,9 @@ def generate_cache(
     3. Fetch descriptions, suppliers, and license fallback from crates.io (parallel)
     4. Combine version/checksum from lockfile with metadata
 
+    `license` and `license_source` hold the declared license from the manifest
+    or registry. A dash-license-scan result goes to `license_concluded`.
+
     Args:
         cargo_lock_path: Optional path to Cargo.lock file
         module_lock_paths: Optional list of paths to MODULE.bazel.lock files
@@ -547,12 +550,12 @@ def generate_cache(
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # Description/supplier collection still uses the API. License requests are fallback only.
+    # Description/supplier collection still uses the API. The registry license
+    # is requested only when the manifest declares none.
     license_lookups = {
         (info["name"], info["version"])
         for key, info in registry_crates.items()
         if not local_licenses[key][0]
-        and f"{info['name']}@{info['version']}" not in license_map
     }
     cratesio_meta = fetch_crate_metadata_from_cratesio(
         sorted({(info["name"], info["version"]) for info in crates.values()}),
@@ -564,15 +567,12 @@ def generate_cache(
     for key, info in crates.items():
         identity = f"{info['name']}@{info['version']}"
         meta = cratesio_meta.get(identity, {})
+        # `license` is the declared license: the manifest, else the registry.
         license_expr, reason = local_licenses[key]
         license_source = info.get("manifest", "") if license_expr else ""
         if not license_expr and key in registry_crates:
-            license_expr = license_map.get(identity, meta.get("license", ""))
-            license_source = (
-                "dash-license-scan"
-                if identity in license_map
-                else meta.get("license_source", "")
-            )
+            license_expr = meta.get("license", "")
+            license_source = meta.get("license_source", "")
             reason += "; " + meta.get(
                 "license_error", "API response has no license expression"
             )
@@ -597,9 +597,15 @@ def generate_cache(
         )
         if info.get("repository"):
             cache[key]["bazel_repository"] = info["repository"]
+        # dash-license-scan concludes a license. It never replaces the declared one.
+        if key in registry_crates and identity in license_map:
+            cache[key]["license_concluded"] = license_map[identity]
         if not license_expr:
             cache[key]["license_error"] = reason
-            print(f"WARNING: License unresolved for {key}: {reason}", file=sys.stderr)
+            print(
+                f"WARNING: Declared license unresolved for {key}: {reason}",
+                file=sys.stderr,
+            )
 
     return cache
 

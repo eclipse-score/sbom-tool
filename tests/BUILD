@@ -35,6 +35,12 @@ score_py_pytest(
 )
 
 score_py_pytest(
+    name = "test_licenses",
+    srcs = ["test_licenses.py"],
+    deps = ["//internal/generator:sbom_generator_lib"],
+)
+
+score_py_pytest(
     name = "test_cpp_enrich_checksum",
     srcs = ["test_cpp_enrich_checksum.py"],
     data = ["//:cpp_metadata.json"],

@@ -30,11 +30,25 @@ from typing import Any
 
 from internal.generator.spdx_formatter import generate_spdx
 from internal.generator.cyclonedx_formatter import generate_cyclonedx
+from internal.generator.licenses import (
+    BCR_TABLE,
+    CDXGEN,
+    DASH,
+    LICENSE_FIELDS,
+    SCORE_DEFAULT,
+    USER,
+    apply_crate_license,
+    license_rank,
+    set_declared_license,
+    set_license,
+)
 from internal.generator.registry_metadata import archive_metadata
 from internal.generator.utils import component_identity
 from internal.generator.reporting import redact_credentials
 from internal.generator.source_identity import git_identity, crate_source_identity
 from internal.generator.source_metadata import (
+    REGISTRY_SOURCES,
+    has_patches,
     read_module_lockfiles,
     parse_module_bazel_locks,
 )
@@ -298,6 +312,9 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
     5. BCR_KNOWN_LICENSES exact match.
     6. BCR_KNOWN_LICENSES parent match (e.g., "boost" entry covers "boost.config").
 
+    Each license records its source: 1-3 are sbom_ext metadata, 4-6 defaults.
+    A declared license found later replaces a default but not sbom_ext metadata.
+
     Args:
         metadata: Metadata dict with "modules" and "licenses" keys. Modified in place.
     """
@@ -306,9 +323,12 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
 
     for module_name, module_data in modules.items():
         if module_data.get("license"):
+            # The extension only sets module licenses from sbom_ext tags.
+            module_data.setdefault("license_source", USER)
             continue  # Already has a license — do not overwrite
 
         license_source: dict[str, str] | None = None
+        evidence = USER
         parent = ""
         if (
             "." in module_name
@@ -330,16 +350,20 @@ def apply_known_licenses(metadata: dict[str, Any]) -> None:
                 "license": "Apache-2.0",
                 "supplier": "Eclipse Foundation",
             }
+            evidence = SCORE_DEFAULT
 
         # 4. BCR known licenses — exact match
         if license_source is None and module_name in BCR_KNOWN_LICENSES:
             license_source = BCR_KNOWN_LICENSES[module_name]
+            evidence = BCR_TABLE
         # 5. BCR known licenses — parent prefix match (e.g. boost.config → boost)
         if license_source is None and parent in BCR_KNOWN_LICENSES:
             license_source = BCR_KNOWN_LICENSES[parent]
+            evidence = BCR_TABLE
 
         if license_source:
             module_data["license"] = license_source["license"]
+            module_data["license_source"] = evidence
             if not module_data.get("supplier") and license_source.get("supplier"):
                 module_data["supplier"] = license_source["supplier"]
             if not module_data.get("url") and license_source.get("url"):
@@ -366,6 +390,24 @@ def normalize_name(name: str) -> str:
     return n
 
 
+def _same_release(version: Any, other: Any) -> bool:
+    """Whether two versions can name one release; an unknown version can."""
+    known = [
+        re.sub(r"\.bcr\.\d+$", "", str(v)).removeprefix("v")
+        for v in (version, other)
+        if v not in (None, "", "unknown")
+    ]
+    return len(known) < 2 or known[0] == known[1]
+
+
+def _scanned_release(candidates: list[dict[str, Any]], version: Any) -> dict[str, Any]:
+    """Return the last scanned entry that can be this release, or {}."""
+    return next(
+        (c for c in reversed(candidates) if _same_release(version, c.get("version"))),
+        {},
+    )
+
+
 def enrich_components_from_cpp_cache(
     components: list[dict[str, Any]],
     cpp_components: list[dict[str, Any]],
@@ -375,6 +417,7 @@ def enrich_components_from_cpp_cache(
 
     For each Bazel component, finds a matching C++ cache entry by normalized
     name and fills in missing fields (license, supplier, version, purl).
+    Entries for a different known version are ignored.
     Components not present in Bazel's discovered dependency graph are ignored.
 
     Args:
@@ -385,20 +428,25 @@ def enrich_components_from_cpp_cache(
     Returns:
         Enriched list of components
     """
-    # Build lookup: normalized_name -> cache component
-    cpp_by_name: dict[str, dict[str, Any]] = {}
+    # Build lookup: name -> cache components in scan order. A scan may list
+    # several releases of one name, so each is kept.
+    cpp_by_name: dict[str, list[dict[str, Any]]] = {}
     for cc in cpp_components:
-        norm = normalize_name(cc["name"])
-        cpp_by_name[norm] = cc
-        cpp_by_name[cc["name"].lower()] = cc
+        for key in dict.fromkeys((normalize_name(cc["name"]), cc["name"].lower())):
+            cpp_by_name.setdefault(key, []).append(cc)
 
     for comp in components:
         if component_identity(comp)[2] in ("cargo", "pypi"):
             continue
         comp_name = comp.get("name", "")
         norm_name = normalize_name(comp_name)
+        # A scan of another release says nothing about this one.
+        version = comp.get("version")
 
-        cpp_match = cpp_by_name.get(norm_name) or cpp_by_name.get(comp_name.lower())
+        cpp_match = _scanned_release(
+            cpp_by_name.get(norm_name) or cpp_by_name.get(comp_name.lower()) or [],
+            version,
+        )
         # Try parent name match (e.g., boost.config+ -> boost)
         if not cpp_match:
             base_name = comp_name.rstrip("+")
@@ -410,13 +458,15 @@ def enrich_components_from_cpp_cache(
                     "git_overrides", {}
                 ) or parent in metadata.get("git_repositories", {}):
                     continue
-                cpp_match = cpp_by_name.get(normalize_name(parent))
+                cpp_match = _scanned_release(
+                    cpp_by_name.get(normalize_name(parent), []), version
+                )
         if not cpp_match:
             continue
 
-        # Enrich missing fields only
-        if not comp.get("license") and cpp_match.get("license"):
-            comp["license"] = cpp_match["license"]
+        # cdxgen reports the license found in the package. It is a declared
+        # license, so it replaces a default but not a user annotation.
+        set_declared_license(comp, cpp_match.get("license"), CDXGEN)
 
         if not comp.get("description") and cpp_match.get("description"):
             comp["description"] = cpp_match["description"]
@@ -648,12 +698,21 @@ def main() -> int:
                 python_cache = json.load(f)
         except (OSError, json.JSONDecodeError):
             python_cache = {}
+    for package in python_cache.values():
+        # Python licenses come only from dash-license-scan.
+        package.setdefault("license_source", DASH)
 
     # Add crates cache to metadata
     if crates_cache:
         if "crates" not in metadata:
             metadata["crates"] = {}
         for name, cache_data in crates_cache.items():
+            # sbom_ext annotations use bare crate names. A bare-name cache entry
+            # moves to its versioned key, so its declaration is kept.
+            if "purl_explicit" in metadata["crates"].get(name, {}) and cache_data.get(
+                "version"
+            ):
+                name += "@" + cache_data["version"]
             metadata["crates"].setdefault(name, cache_data)
 
     metadata["crate_sources"] = parse_module_bazel_locks(
@@ -846,11 +905,16 @@ def _get_crate_metadata(
             if shared.get("bazel_repository") not in (None, "", repository):
                 shared = {}
             # Name-based metadata may enrich annotations, never the checkout.
-            base = {
-                field: shared[field]
-                for field in ("license", "description", "supplier", *_IDENTITY_FIELDS)
-                if field in shared
-            }
+            # resolve_component applies sbom_ext annotations as such.
+            fields = ("description", "supplier", *_IDENTITY_FIELDS)
+            # License fields are inherited together, and only from the same source.
+            if (
+                "purl_explicit" not in shared
+                and "license" not in repo_meta
+                and shared.get("source") in (None, repo_meta.get("source"))
+            ):
+                fields += tuple(k for k in shared if k.startswith("license"))
+            base = {field: shared[field] for field in fields if field in shared}
             # Merge aliases first so the canonical spelling keeps precedence.
             for key in reversed(_crate_names(name)):
                 manual = crates.get(key, {})
@@ -916,10 +980,11 @@ def _build_crate_result(
     result.update(
         {
             field: crate_meta[field]
-            for field in ("license", "description", "supplier", *_IDENTITY_FIELDS)
+            for field in ("description", "supplier", "license_error", *_IDENTITY_FIELDS)
             if crate_meta.get(field)
         }
     )
+    apply_crate_license(result, crate_meta)
     result.update(crate_source_identity(crate_name, version, crate_meta))
     if not result.get("checksum"):
         result.pop("checksum", None)
@@ -949,7 +1014,8 @@ def resolve_component(
         # every route, with direct license annotations taking precedence.
         for collection in ("http_archives", "git_repositories", "licenses"):
             annotation = metadata.get(collection, {}).get(name, {})
-            for field in ("license", "supplier", *_IDENTITY_FIELDS):
+            set_license(result, annotation.get("license"), USER)
+            for field in ("supplier", *_IDENTITY_FIELDS):
                 if annotation.get(field):
                     result[field] = annotation[field]
             if annotation.get("purl") and (
@@ -971,7 +1037,8 @@ def resolve_component(
             if "purl_explicit" in annotation and annotation.get(
                 "version", "unknown"
             ) in ("", "unknown", result["version"]):
-                for field in ("license", "supplier", *_IDENTITY_FIELDS):
+                set_license(result, annotation.get("license"), USER)
+                for field in ("supplier", *_IDENTITY_FIELDS):
                     if annotation.get(field):
                         result[field] = annotation[field]
                 if annotation["purl_explicit"]:
@@ -998,9 +1065,24 @@ def _resolve_component(
     locked = metadata.get("crate_sources", {}).get(repo_name)
     if locked and locked.get("name"):
         name, version = locked["name"], locked["version"]
-        crate_meta = _get_crate_metadata(
-            metadata.get("crates", {}), name, version, repo_name
+        crates = metadata.get("crates", {})
+        crate_meta = _get_crate_metadata(crates, name, version, repo_name)
+        registry_crate = locked.get("source") in REGISTRY_SOURCES and not has_patches(
+            locked
         )
+        if (
+            not registry_crate
+            and "repo:" + repo_name not in crates
+            and crate_meta.get("source") in REGISTRY_SOURCES
+            and (crate_meta.get("license") or crate_meta.get("license_concluded"))
+        ):
+            # The registry crate's licenses do not describe a fork or patched
+            # archive. sbom_ext annotations still apply afterwards.
+            crate_meta = {
+                **{k: v for k, v in crate_meta.items() if not k.startswith("license")},
+                "license_error": "Cached license belongs to the registry crate, "
+                "not this source",
+            }
         return _build_crate_result(
             name, crate_meta.get("version", version), crate_meta, repo_name
         )
@@ -1020,6 +1102,7 @@ def _resolve_component(
             "type": "library",
             "supplier": mod.get("supplier", ""),
             "license": mod.get("license", ""),
+            "license_source": mod.get("license_source", USER),
             "url": mod.get("url", ""),
             "description": mod.get("description", ""),
             "cpe": mod.get("cpe", ""),
@@ -1038,8 +1121,7 @@ def _resolve_component(
         if normalized_name.startswith("score_"):
             if not result.get("supplier"):
                 result["supplier"] = "Eclipse Foundation"
-            if not result.get("license"):
-                result["license"] = "Apache-2.0"
+            set_license(result, "Apache-2.0", SCORE_DEFAULT)
 
         return result
 
@@ -1054,6 +1136,7 @@ def _resolve_component(
             "type": "library",
             "url": archive.get("url", ""),
             "license": archive.get("license", ""),
+            "license_source": USER,
             "supplier": archive.get("supplier", ""),
             "cpe": archive.get("cpe", ""),
             "aliases": archive.get("aliases", []),
@@ -1077,6 +1160,7 @@ def _resolve_component(
             "type": "library",
             "url": repo.get("remote", ""),
             "license": repo.get("license", ""),
+            "license_source": USER,
             "supplier": repo.get("supplier", ""),
             "cpe": repo.get("cpe", ""),
             "aliases": repo.get("aliases", []),
@@ -1113,6 +1197,7 @@ def _resolve_component(
             "type": "library",
             "supplier": "Eclipse Foundation",
             "license": "Apache-2.0",
+            "license_source": SCORE_DEFAULT,
             "url": "",
             "cpe": "",
             "aliases": [],
@@ -1170,6 +1255,7 @@ def _resolve_component(
                 "purl": f"pkg:generic/{normalized_name}@{parent_version}",
                 "type": "library",
                 "license": parent.get("license", ""),
+                "license_source": parent.get("license_source", USER),
                 "supplier": parent.get("supplier", ""),
             }
             # Propagate checksum from parent if available (e.g., http_archive
@@ -1238,8 +1324,12 @@ def deduplicate_components(components: list[dict[str, Any]]) -> list[dict[str, A
                 raise ValueError(
                     f"Conflicting crate repositories for {key[0]}@{key[1]}: {sources}"
                 )
+            # The concluded license with the highest priority wins.
+            if license_rank(comp) < license_rank(seen[key]):
+                for field in LICENSE_FIELDS:
+                    seen[key][field] = comp.get(field, "")
             for field, value in comp.items():
-                if value and not seen[key].get(field):
+                if field not in LICENSE_FIELDS and value and not seen[key].get(field):
                     seen[key][field] = value
 
     return list(seen.values())

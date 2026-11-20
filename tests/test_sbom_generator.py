@@ -494,6 +494,107 @@ class TestResolveComponentCrateUniverse(unittest.TestCase):
                     self.assertEqual(comp["aliases"], ["wasi-alias"])
                     self.assertEqual(comp["pedigree_notes"], "Fork")
 
+    def test_repository_cache_ignores_registry_conclusion(self):
+        """A dash conclusion for the crates.io crate never applies to a fork."""
+        repo = "rules_rust++crate+crate_index__serde-1.0.228"
+        for license_expr, expected in (("", None), ("MIT", "MIT")):
+            with self.subTest(license=license_expr):
+                meta = self._meta(
+                    **{
+                        "serde@1.0.228": {
+                            "version": "1.0.228",
+                            "license": "MIT OR Apache-2.0",
+                            "license_concluded": "Apache-2.0",
+                        },
+                        "repo:" + repo: {
+                            "name": "serde",
+                            "version": "1.0.228",
+                            "license": license_expr,
+                            "license_source": "external/serde/Cargo.toml",
+                            "bazel_repository": repo,
+                        },
+                    }
+                )
+                comp = resolve_component(repo, meta)
+                self.assertEqual(comp.get("license"), expected)
+                self.assertNotEqual(comp.get("license_source"), "dash-license-scan")
+
+    def test_registry_licenses_do_not_apply_to_another_source(self):
+        repo = "rules_rust++crate+crate_index__foo-1.0.0"
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        git = {"remote": "https://example.com/foo.git", "commit": "a" * 40}
+        for source, attrs, applies in (
+            ("git", git, False),
+            ("module-bazel-lock", {"patches": ["//p:fix.patch"]}, False),
+            (registry, {"checksum": "c" * 64}, True),
+        ):
+            with self.subTest(source=source):
+                locked = {"name": "foo", "version": "1.0.0", "source": source}
+                meta = self._meta(
+                    **{
+                        "foo@1.0.0": {
+                            "version": "1.0.0",
+                            "source": registry,
+                            "license": "MIT OR Apache-2.0",
+                            "license_source": "https://crates.io/api/v1/crates/foo",
+                            "license_concluded": "MIT",
+                        }
+                    }
+                )
+                meta["crate_sources"] = {repo: {**locked, **attrs}}
+                comp = resolve_component(repo, meta)
+                self.assertEqual(comp.get("license"), "MIT" if applies else None)
+                self.assertEqual("license_error" in comp, not applies)
+
+    def test_repository_entry_inherits_licenses_of_its_own_source_only(self):
+        repo = "rules_rust++crate+crate_index__foo-1.0.0"
+        registry = "registry+https://github.com/rust-lang/crates.io-index"
+        for source, applies in (("git", False), (registry, True)):
+            with self.subTest(source=source):
+                meta = self._meta(
+                    **{
+                        "foo@1.0.0": {
+                            "version": "1.0.0",
+                            "source": registry,
+                            "license": "MIT",
+                            "license_source": "https://crates.io/api/v1/crates/foo",
+                            "license_concluded": "Apache-2.0",
+                        },
+                        "repo:" + repo: {
+                            "name": "foo",
+                            "version": "1.0.0",
+                            "source": source,
+                        },
+                    }
+                )
+                comp = resolve_component(repo, meta)
+                declared = comp.get("license_declared")
+                self.assertEqual(declared, "MIT" if applies else None)
+                self.assertEqual(comp.get("license"), "Apache-2.0" if applies else None)
+
+    def test_repository_license_keeps_its_own_provenance(self):
+        """A scoped license without a source is not attributed to a legacy DASH."""
+        repo = "rules_rust++crate+crate_index__serde-1.0.228"
+        meta = self._meta(
+            **{
+                "serde@1.0.228": {
+                    "version": "1.0.228",
+                    "license": "Apache-2.0",
+                    "license_source": "dash-license-scan",
+                },
+                "repo:" + repo: {
+                    "name": "serde",
+                    "version": "1.0.228",
+                    "license": "MIT",
+                    "bazel_repository": repo,
+                },
+            }
+        )
+        comp = resolve_component(repo, meta)
+        self.assertEqual(comp["license_declared"], "MIT")
+        self.assertEqual(comp["license"], "MIT")
+        self.assertNotEqual(comp["license_source"], "dash-license-scan")
+
     def test_bare_name_requires_one_cached_version(self):
         crates = {"shlex@1.3.0": {"version": "1.3.0", "checksum": "a" * 64}}
         self.assertEqual(
@@ -1442,12 +1543,14 @@ class TestMain(unittest.TestCase):
                 }
                 self.assertEqual(len(packages), 3)
                 self.assertEqual(len({p["SPDXID"] for p in spdx["packages"]}), 4)
-                for ecosystem, license_expr, checksum in (
-                    ("pypi", "Apache-2.0", "b" * 64),
-                    ("cargo", "MIT", "a" * 64),
+                # Python licenses come from dash-license-scan, a conclusion.
+                for ecosystem, license_expr, declared, checksum in (
+                    ("pypi", "Apache-2.0", "NOASSERTION", "b" * 64),
+                    ("cargo", "MIT", "MIT", "a" * 64),
                 ):
                     package = packages[f"pkg:{ecosystem}/shlex@1.3.0"]
-                    self.assertEqual(package["licenseDeclared"], license_expr)
+                    self.assertEqual(package["licenseConcluded"], license_expr)
+                    self.assertEqual(package["licenseDeclared"], declared)
                     self.assertEqual(package["checksums"][0]["checksumValue"], checksum)
                 parent = packages["pkg:cargo/bindgen@1.0.0"]["SPDXID"]
                 rust_id = packages["pkg:cargo/shlex@1.3.0"]["SPDXID"]
@@ -1469,7 +1572,15 @@ class TestMain(unittest.TestCase):
                 ):
                     component = components[f"pkg:{ecosystem}/shlex@1.3.0"]
                     self.assertEqual(
-                        component["licenses"], [{"license": {"id": license_expr}}]
+                        component["licenses"],
+                        [
+                            {
+                                "license": {
+                                    "id": license_expr,
+                                    "acknowledgement": "concluded",
+                                }
+                            }
+                        ],
                     )
                     self.assertEqual(component["hashes"][0]["content"], checksum)
                 refs = {c["bom-ref"] for c in cdx["components"]}
@@ -1608,7 +1719,10 @@ class TestMain(unittest.TestCase):
         self.assertEqual(package["checksums"][0]["checksumValue"], "a" * 64)
         with open(self._cdx_path) as f:
             component = json.load(f)["components"][0]
-        self.assertEqual(component["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertEqual(
+            component["licenses"],
+            [{"license": {"id": "MIT", "acknowledgement": "concluded"}}],
+        )
         self.assertEqual(component["pedigree"]["notes"], "Manual annotation")
         self.assertEqual(
             component["cpe"], "cpe:2.3:a:example:shlex:1.3.0:*:*:*:*:*:*:*"
@@ -1656,7 +1770,9 @@ class TestMain(unittest.TestCase):
                     "name": "nlohmann_json",
                     "version": "3.11.3",
                     "purl": "pkg:generic/nlohmann_json@3.11.3",
-                    "licenses": [{"license": {"id": "MIT"}}],
+                    "licenses": [
+                        {"license": {"id": "MIT", "acknowledgement": "concluded"}}
+                    ],
                     "description": "JSON for Modern C++",
                 }
             ],
