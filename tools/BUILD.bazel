@@ -20,7 +20,8 @@
 # leaves the root package loadable by any consumer. The CI workflows pass the
 # target names explicitly.
 
-load("@score_tooling//:defs.bzl", "copyright_checker", "use_format_targets")
+load("@score_tooling//:defs.bzl", "copyright_checker")
+load("@score_tooling//third_party/format:macros.bzl", "use_format_targets")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -42,19 +43,18 @@ use_format_targets(languages = [
 copyright_checker(
     name = "copyright",
     srcs = [
-        "//:.github",
-        "//:BUILD.bazel",
-        "//:MODULE.bazel",
-        "//:defs.bzl",
-        "//:extensions.bzl",
-        "//:internal",
-        "//:scripts",
-        "//:tests",
-        "//tools:BUILD.bazel",
+        ".github",
+        "BUILD.bazel",
+        "MODULE.bazel",
+        "defs.bzl",
+        "extensions.bzl",
+        "internal",
+        "scripts",
+        "tests",
+        "tools/BUILD.bazel",
     ],
-    # examples/dummy_project is absent on purpose: .bazelignore hides it from
-    # this workspace, so no label can reach its files, and a directory artifact
-    # for examples/ would follow the bazel-* convenience symlinks a local build
+    # examples/dummy_project is absent on purpose: a directory path for
+    # examples/ would follow the bazel-* convenience symlinks a local build
     # leaves there. Its headers are checked by review only.
     config = "@score_tooling//cr_checker/resources:config",
     # No extensions/exclusion, matching eclipse-score/module_template: cr_checker
