@@ -438,3 +438,29 @@ sbom_rule = rule(
     toolchains = ["@rules_nodejs//nodejs:toolchain_type"],
     doc = "Generates SBOM for specified targets in SPDX and CycloneDX formats",
 )
+
+def _sbom_export_impl(ctx):
+    tool = ctx.executable._exporter
+    executable = ctx.actions.declare_file(ctx.label.name + (".exe" if tool.extension == "exe" else ""))
+    ctx.actions.symlink(output = executable, target_file = tool, is_executable = True)
+
+    # Give each report a runfiles key independent of its Bazel package or repository.
+    reports = {"_sbom_reports/" + f.basename: f for f in ctx.files.reports}
+    runfiles = ctx.runfiles(root_symlinks = reports).merge(ctx.attr._exporter[DefaultInfo].default_runfiles)
+    return [
+        DefaultInfo(executable = executable, runfiles = runfiles),
+        RunEnvironmentInfo(environment = {
+            "SBOM_OUTPUT_DIR": ctx.attr.output_dir,
+            "SBOM_REPORTS": json.encode(reports.keys()),
+        }),
+    ]
+
+sbom_export = rule(
+    implementation = _sbom_export_impl,
+    executable = True,
+    attrs = {
+        "reports": attr.label(mandatory = True),
+        "output_dir": attr.string(mandatory = True),
+        "_exporter": attr.label(default = "//internal:export_sbom", executable = True, cfg = "exec"),
+    },
+)

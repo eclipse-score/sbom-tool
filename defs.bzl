@@ -29,7 +29,7 @@ Example usage:
     )
 """
 
-load("//internal:rules.bzl", "sbom_rule")
+load("//internal:rules.bzl", "sbom_export", "sbom_rule")
 
 def sbom(
         name,
@@ -59,6 +59,7 @@ def sbom(
         cdxgen_version = "12.1.4",
         registry_cache = None,
         auto_registry_cache = True,
+        output_dir = None,
         **kwargs):
     """Generates SBOM for specified targets.
 
@@ -95,6 +96,8 @@ def sbom(
         registry_cache: Previously downloaded registry metadata for offline builds
         auto_registry_cache: Download registry metadata to read archive checksums
         output_formats: List of formats to generate ("spdx", "cyclonedx")
+        output_dir: Optional destination for `bazel run :<name>_export`.
+            Relative paths are resolved from the consumer's workspace root.
         producer_name: SBOM producer organization name
         producer_url: URL of the SBOM producer organisation. When this is a
             ``https://github.com/<owner>`` URL, the ``<owner>`` segment is
@@ -180,3 +183,12 @@ def sbom(
         exclude_patterns = all_exclude_patterns,
         **kwargs
     )
+
+    if output_dir:
+        sbom_export(
+            name = name + "_export",
+            reports = ":" + name,
+            output_dir = output_dir,
+            testonly = testonly,
+            **{k: kwargs[k] for k in ["visibility", "tags", "target_compatible_with"] if k in kwargs}
+        )

@@ -16,6 +16,8 @@
 # This package contains internal implementation details for SBOM generation.
 # External consumers should use the public API in //:defs.bzl
 
+load("@rules_python//python:defs.bzl", "py_binary")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
@@ -25,6 +27,12 @@ exports_files([
     "providers.bzl",
     "rules.bzl",
 ])
+
+py_binary(
+    name = "export_sbom",
+    srcs = ["export_sbom.py"],
+    deps = ["@rules_python//python/runfiles"],
+)
 
 # Filegroup for all internal bzl files
 filegroup(
