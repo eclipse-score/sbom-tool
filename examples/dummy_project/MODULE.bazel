@@ -29,6 +29,13 @@ local_path_override(
     path = "../..",
 )
 
+# As a root module, this example chooses the Node.js toolchain for its cdxgen
+# smoke test.
+bazel_dep(name = "rules_nodejs", version = "6.7.3")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "20.19.0")
+
 # --- C++ dummy code -----------------------------------------------------------
 
 bazel_dep(name = "rules_cc", version = "0.2.9")
