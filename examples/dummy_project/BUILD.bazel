@@ -35,6 +35,7 @@ sbom(
     component_version = "0.1.0",
     generation_context = "build",
     module_lockfiles = [":MODULE.bazel.lock"],
+    output_dir = "reports/sbom",
     output_formats = [
         "spdx",
         "cyclonedx",

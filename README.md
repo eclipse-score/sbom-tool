@@ -130,6 +130,7 @@ the qualification scope requires the JDK installation as well.
 | `auto_cdxgen` | `False` | Runs cdxgen automatically inside the Bazel build using Bazel-managed Node/npm (no host `npm` or `nvm` installation required). Uses `no-sandbox` execution to scan the source tree. Ignored for pure Rust projects. |
 | `cdxgen_version` | `"12.1.4"` | Pinned npm version for `@cyclonedx/cdxgen` used by `auto_cdxgen`; override to upgrade/downgrade deterministically. |
 | `output_formats` | `["spdx", "cyclonedx"]` | List of output formats to generate; valid values are `"spdx"` and `"cyclonedx"`. |
+| `output_dir` | `None` | Directory where `bazel run :<name>_export` copies the selected reports. Accepts an absolute path or a path relative to the workspace root. |
 | `producer_name` | `"Eclipse Foundation"` | Organisation name recorded as the SBOM producer. |
 | `producer_url` | Eclipse S-CORE URL | URL of the SBOM producer organisation. When this is a `https://github.com/<owner>` URL, the `<owner>` segment is also used as the GitHub namespace in the root component's `pkg:github/…` PURL. For non-GitHub URLs the PURL namespace falls back to `eclipse-score`. |
 | `sbom_authors` | `None` | List of author strings written into SBOM metadata; defaults to `producer_name` when omitted. |
@@ -181,6 +182,22 @@ Generated in `bazel-bin/`:
 - `my_sbom_crates_metadata.json` — Rust crate cache (if `auto_crates_cache = True`)
 - `my_sbom_registry_metadata.json` — Downloaded registry metadata
 - `my_sbom_cdxgen.cdx.json` — C++ scan output (if `auto_cdxgen = True`)
+
+To export reports outside `bazel-bin`, set `output_dir` on the integration's
+SBOM target in its `BUILD` file:
+
+```starlark
+sbom(
+    name = "my_sbom",
+    targets = ["//src:my_app"],
+    output_dir = "reports/sbom",
+)
+```
+
+Run `bazel run //:my_sbom_export` to build the reports and copy them to
+`reports/sbom/` in the workspace. The command creates the directory and
+replaces files with the same report names on subsequent runs.
+`bazel build //:my_sbom` continues to produce the ordinary Bazel artifacts.
 
 ---
 

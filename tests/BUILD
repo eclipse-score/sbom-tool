@@ -17,6 +17,12 @@ load(":test_module_sources.bzl", "module_sources_test")
 package(default_visibility = ["//visibility:private"])
 
 score_py_pytest(
+    name = "test_export_sbom",
+    srcs = ["test_export_sbom.py"],
+    deps = ["//internal:export_sbom"],
+)
+
+score_py_pytest(
     name = "test_spdx_formatter",
     srcs = ["test_spdx_formatter.py"],
     deps = ["//internal/generator:spdx_formatter"],
