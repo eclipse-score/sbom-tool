@@ -34,7 +34,7 @@ use_repo(uv, "uv")
 
 # score_tooling provides score_py_pytest test infrastructure plus the
 # //tools:format.check and //tools:copyright-check targets (dev only).
-bazel_dep(name = "score_tooling", version = "3.0.2", dev_dependency = True)
+bazel_dep(name = "score_tooling", version = "3.1.0", dev_dependency = True)
 
 # Formatters behind use_format_targets(); dev-only, same as score_tooling.
 bazel_dep(name = "aspect_rules_lint", version = "2.3.0", dev_dependency = True)
